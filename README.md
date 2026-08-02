@@ -8,7 +8,16 @@ See `docs/seed-1.md` (engine) and `docs/seed-2.md` (host / stdlib decisions).
 
 QuickJS `2026-06-04` is vendored under `third_party/quickjs/`.
 
-## CLI (`goqjs`)
+## How it works
+
+- **C/QuickJS owns the event loop** (`js_std_loop`).
+- Core boot (in Go) exposes timers + invoke — not `console` / `fetch` / HTTP.
+- `stdlib.Install` injects host APIs before the first `Run`; later injection panics.
+- `pool.New` builds N workers; serve wraps user `run(req,res)` and binds each request by id.
+
+## Examples
+
+### CLI (`goqjs`)
 
 ```bash
 go run ./cmd/goqjs -f examples/sleep.js 3 5 6
@@ -26,7 +35,7 @@ make test
 | `examples/fib.js` | CPU-bound; use `-c 2` |
 | `examples/fact.js` | BigInt factorial — CPU-bound |
 
-## HTTP (`goqjs-serve`)
+### HTTP (`goqjs-serve`)
 
 ```bash
 go run ./cmd/goqjs-serve -f examples/serve-hello.js
@@ -43,9 +52,14 @@ JS entry is `async function(req, res) { ... }`. Go locates the response via `req
 | `examples/serve-sleep.js` | async sleep then chunked write |
 | `examples/serve-fib.js` | CPU fib from `?n=` |
 
-## How it works
+### HN SSR (Vite + React)
 
-- **C/QuickJS owns the event loop** (`js_std_loop`).
-- Core boot (in Go) exposes timers + invoke — not `console` / `fetch` / HTTP.
-- `stdlib.Install` injects host APIs before the first `Run`; later injection panics.
-- `pool.New` builds N workers; serve wraps user `run(req,res)` and binds each request by id.
+Minimal Hacker News SSR demo (Firebase API, no GraphQL) — future goqjs target:
+
+```bash
+cd examples/hn-ssr && npm install && npm run dev
+# or embedded Go host:
+cd examples/hn-ssr && npm run build:go && ./hn-ssr -addr :8080
+```
+
+See [`examples/hn-ssr/README.md`](examples/hn-ssr/README.md).
