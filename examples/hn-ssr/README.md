@@ -1,6 +1,6 @@
 # Minimal Hacker News SSR (Vite + React)
 
-Demo app for future **goqjs** React SSR integration. Uses the public
+Demo for **goqjs** React SSR. Uses the public
 [Hacker News Firebase API](https://github.com/HackerNews/API) — no GraphQL.
 
 ## Pages
@@ -10,27 +10,27 @@ Demo app for future **goqjs** React SSR integration. Uses the public
 | `/` | Top 30 stories |
 | `/item/:id` | Story + comments (depth ≤ 2) |
 
-SSR path: Express → `loadData(url)` (async `fetch`) → `renderToString` → hydrate.
-
-## Run (Node host)
+## Dev (Node + Vite)
 
 ```bash
-cd examples/hn-ssr
 npm install
 npm run dev          # http://localhost:5173
 ```
 
+SSR path: Express → `loadData(url)` → `renderToString` → hydrate.
+
 ```bash
-npm run build
-npm start            # Node + dist/
+npm run build && npm start   # Node host + dist/
 ```
 
-## Run (Go + goqjs, embedded dist)
+## Prod (Go + goqjs, embedded dist)
 
 ```bash
-npm run build:go     # vite → dist/ + go build -o hn-ssr
+make prod            # npm run build + go build -trimpath -ldflags "-s -w"
 ./hn-ssr -addr :8080 -c 2
 ```
+
+From the repo root: `make hn-ssr` (same as `make -C examples/hn-ssr prod`).
 
 `main.go` embeds `dist/` (`client` assets + `server/ssr.js`). Each request:
 `loadData` (stdlib `fetch`) → `renderToString` in QuickJS → HTML with
@@ -47,6 +47,7 @@ src/entry-client.jsx   hydrateRoot
 src/App.jsx            home / item (plain <a> navigation)
 server.js              Vite middleware (dev) / Node SSR (prod)
 main.go                embed dist/ + goqjs pool host
+Makefile               prod → dist/ + hn-ssr binary
 vite.goqjs.config.js   bundles React into dist/server/ssr.js
 ```
 
