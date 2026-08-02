@@ -1,0 +1,77 @@
+# Fib HTTP bench: Bun / Deno / goqjs-serve
+
+Compares **request latency**, **concurrency**, and **CPU-heavy concurrent** load on the same recursive `fib(n)` handler.
+
+Interpreted write-up of a real run (tables + analysis): **[`BENCH.md`](./BENCH.md)**.
+
+## Requires
+
+| tool | notes |
+|------|--------|
+| [oha](https://github.com/hatoo/oha) | on `PATH` (verified with **1.15.x**) |
+| bun | verified with **1.3.x** |
+| deno | **>= 2.x** required (`run.sh` checks); verified with **2.9.x** |
+| go, curl | build `goqjs-serve` / readiness probe |
+
+`run.sh` prints `oha` / `bun` / `deno` versions into the result file and **exits if Deno major < 2**.
+
+## Run (sequential — fairer on one machine)
+
+```bash
+./bench/run.sh
+# multi-worker Deno (closer to goqjs -c N on CPU-bound load):
+DENO_PARALLEL=1 ./bench/run.sh
+```
+
+Order: **bun → deno → goqjs `-c 1` → goqjs `-c $nproc`**. One server at a time on `PORT` (default `19100`).
+
+Output:
+
+- `bench/results/<timestamp>.txt` — full log (gitignored)
+- `bench/results/<timestamp>.md` — **comparison tables** (gitignored)
+- `bench/results/<timestamp>.metrics/*.json` — raw oha JSON
+
+Regenerate markdown from an older text log:
+
+```bash
+python3 bench/report.py --from-txt bench/results/20260802-221427.txt \
+  --out bench/results/20260802-221427.md
+```
+
+### Tunables (env)
+
+| var | default | meaning |
+|-----|---------|---------|
+| `PORT` | `19100` | listen port |
+| `GOQJS_C` | `nproc` | goqjs pool size for the multi-worker pass |
+| `DENO_PARALLEL` | `0` | `1` → `deno serve --parallel` |
+| `LATENCY_N` | `20` | fib n for latency pass |
+| `CONCUR_N` | `20` | fib n for concurrency pass |
+| `CPU_N` | `32` | fib n for CPU-parallel pass |
+
+### Scenarios (per runtime)
+
+1. **latency** — `oha -n 200 -c 1 ?n=$LATENCY_N`
+2. **concurrency** — `oha -z 5s -c 50 ?n=$CONCUR_N`
+3. **cpu-parallel** — `oha -n 40 -c 8 ?n=$CPU_N`
+
+## Layout
+
+| file | role |
+|------|------|
+| `fib.js` | shared `fib` / `parseN` for Bun & Deno |
+| `server_bun.js` | `Bun.serve` |
+| `server_deno.js` | default export for `deno serve` (sync handler + string `Response` fast path); also `import.meta.main` for `deno run` |
+| `../examples/serve-fib.js` | goqjs handler (same algorithm; keep in sync with `fib.js`) |
+| `run.sh` | sequential orchestrator + version gate |
+
+## Deno notes
+
+- Prefer **`deno serve --host 127.0.0.1 --port $PORT`** (what `run.sh` uses) over ad-hoc `Deno.env` + `--allow-env`.
+- Handler stays **synchronous** and returns `new Response(string)` so Deno 2’s serve hot path applies.
+- For multi-core CPU passes, set `DENO_PARALLEL=1` (uses `--parallel` / `DENO_JOBS`); default single worker is closer to goqjs `-c 1`.
+
+## Notes
+
+- Stresses **JS CPU + serve wiring**, not routers.
+- Warmup: one `?n=5` before each target’s oha group.

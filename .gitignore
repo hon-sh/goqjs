@@ -8,6 +8,7 @@
 *.so
 *.dylib
 /goqjs
+/goqjs-*
 *.o
 *.a
 
@@ -31,6 +32,11 @@ go.work.sum
 
 # env file
 .env
+
+# Bench outputs / local binaries
+bench/results/
+bench/results/**/*.metrics/
+bench/.bin/
 
 # Editor/IDE
 # .idea/

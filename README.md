@@ -8,28 +8,44 @@ See `docs/seed-1.md` (engine) and `docs/seed-2.md` (host / stdlib decisions).
 
 QuickJS `2026-06-04` is vendored under `third_party/quickjs/`.
 
-## Run
+## CLI (`goqjs`)
 
 ```bash
 go run ./cmd/goqjs -f examples/sleep.js 3 5 6
 go run ./cmd/goqjs -c 2 -f examples/fib.js 32 33 34 35
-go run ./cmd/goqjs -f examples/fact.js 20000 20000
-go test ./runtime/... ./stdlib/... ./pool/... -count=1
+make test
 ```
 
-`-c N` starts an N-wide Runtime pool (`goqjs/pool`). Exactly one of `-e` / `-f` supplies the JS **function expression** for `run`. Remaining args each start one concurrent `pool.Run(arg)`.
+`-c N` starts an N-wide Runtime pool. Exactly one of `-e` / `-f` supplies the JS **function expression** for `run`. Remaining args each start one concurrent `pool.Run(arg)`.
 
-`cmd/goqjs` installs `goqjs/stdlib` console and a convenience `sleep` (`Promise` + `setTimeout`).
+`cmd/goqjs` installs stdlib `console` and a convenience `sleep`.
 
 | example | role |
 |---------|------|
 | `examples/sleep.js` | async timer multiplexing |
-| `examples/fib.js` | CPU-bound; use `-c 2` for parallel Runtimes |
+| `examples/fib.js` | CPU-bound; use `-c 2` |
 | `examples/fact.js` | BigInt factorial — CPU-bound |
+
+## HTTP (`goqjs-serve`)
+
+```bash
+go run ./cmd/goqjs-serve -f examples/serve-hello.js
+go run ./cmd/goqjs-serve -c 2 -f examples/serve-sleep.js -addr :8080
+curl -s localhost:8080/hi
+curl -s 'localhost:8080/fib?n=20'   # with serve-fib.js
+```
+
+JS entry is `async function(req, res) { ... }`. Go locates the response via `req_id` (not raw fds).
+
+| example | role |
+|---------|------|
+| `examples/serve-hello.js` | method/path echo |
+| `examples/serve-sleep.js` | async sleep then chunked write |
+| `examples/serve-fib.js` | CPU fib from `?n=` |
 
 ## How it works
 
 - **C/QuickJS owns the event loop** (`js_std_loop`).
-- Core boot (in Go) exposes `setTimeout` / `clearTimeout` and the invoke protocol — not `console` / `fetch` / `resp`.
-- `stdlib.Install` injects reusable host APIs before the first `Run`; later injection panics.
-- `pool.New` builds N workers; `Run` round-robins. Context cancel tears down loops when idle.
+- Core boot (in Go) exposes timers + invoke — not `console` / `fetch` / HTTP.
+- `stdlib.Install` injects host APIs before the first `Run`; later injection panics.
+- `pool.New` builds N workers; serve wraps user `run(req,res)` and binds each request by id.
