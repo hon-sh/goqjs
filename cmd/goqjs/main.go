@@ -1,32 +1,94 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 
 	"goqjs/runtime"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: goqjs <c> [c...]\n")
-		fmt.Fprintf(os.Stderr, "  each <c> starts one concurrent async job that writes 0..c-1 with 1s sleeps\n")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: goqjs (-e code | -f file) [arg...]\n")
+		fmt.Fprintf(os.Stderr, "  -e code   JS function expression for run\n")
+		fmt.Fprintf(os.Stderr, "  -f file   read run function expression from file\n")
+		fmt.Fprintf(os.Stderr, "  each arg starts one concurrent r.Run(arg)\n")
+		fmt.Fprintf(os.Stderr, "\nexamples:\n")
+		fmt.Fprintf(os.Stderr, "  goqjs -f examples/sleep.js 3 5 6\n")
+		fmt.Fprintf(os.Stderr, "  goqjs -f examples/fib.js 32 33 34\n")
+		fmt.Fprintf(os.Stderr, "  goqjs -f examples/fact.js 20000 20000\n")
+	}
+
+	code := flag.String("e", "", "JS function expression for run")
+	file := flag.String("f", "", "file containing JS function expression for run")
+	flag.Parse()
+
+	hasE := *code != ""
+	hasF := *file != ""
+	if hasE == hasF {
+		if !hasE && !hasF {
+			fmt.Fprintf(os.Stderr, "goqjs: require -e or -f\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "goqjs: -e and -f are mutually exclusive\n")
+		}
+		flag.Usage()
 		os.Exit(2)
 	}
 
-	counts := make([]int, 0, len(os.Args)-1)
-	for _, a := range os.Args[1:] {
-		n, err := strconv.Atoi(a)
-		if err != nil || n < 0 {
-			fmt.Fprintf(os.Stderr, "invalid count %q\n", a)
-			os.Exit(2)
+	var run string
+	if hasE {
+		run = *code
+	} else {
+		b, err := os.ReadFile(*file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "goqjs: read %s: %v\n", *file, err)
+			os.Exit(1)
 		}
-		counts = append(counts, n)
+		run = string(b)
+	}
+	run = strings.TrimSpace(run)
+	if run == "" {
+		fmt.Fprintf(os.Stderr, "goqjs: empty run\n")
+		os.Exit(2)
 	}
 
-	if err := runtime.Run(counts); err != nil {
+	args := flag.Args()
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "goqjs: require at least one arg for run\n")
+		flag.Usage()
+		os.Exit(2)
+	}
+
+	runArgs := make([]any, len(args))
+	for i, a := range args {
+		if n, err := strconv.Atoi(a); err == nil {
+			runArgs[i] = n
+		} else {
+			runArgs[i] = a
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := runtime.New(ctx, run)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "goqjs: %v\n", err)
 		os.Exit(1)
 	}
+
+	var wg sync.WaitGroup
+	for _, arg := range runArgs {
+		wg.Go(func() {
+			if err := r.Run(arg); err != nil {
+				fmt.Fprintf(os.Stderr, "goqjs: run(%v): %v\n", arg, err)
+			}
+		})
+	}
+	wg.Wait()
+	cancel()
+	<-r.Done()
 }

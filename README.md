@@ -9,28 +9,23 @@ QuickJS `2026-06-04` is vendored under `third_party/quickjs/` (from Bellard's ta
 ## Run
 
 ```bash
-cd _misc/goqjs
-go run ./cmd/goqjs 3 5 6
+go run ./cmd/goqjs -f examples/sleep.js 3 5 6
+go run ./cmd/goqjs -f examples/fib.js 32 33 34
+go run ./cmd/goqjs -f examples/fact.js 20000 20000
+go run ./cmd/goqjs -e 'async function(c) { await resp.write(c, "hi"); }' 1 2
 ```
 
-Starts **one** QuickJS instance and three concurrent jobs (`c=3`, `c=5`, `c=6`). Each job:
+Exactly one of `-e` / `-f` is required: a JS **function expression** bound as `run`. Remaining args each start one concurrent `r.Run(arg)` (ints parsed when possible, else strings).
 
-```js
-for (let i = 0; i < c; ++i) {
-  await resp.write(c, String(i));
-  await sleep(1000);
-}
-```
-
-Writes are prefixed with the call's `c` (e.g. `[3]0`) and flushed immediately; interleaved output over ~6s is expected. Exit when all jobs finish.
-
-```bash
-go run ./cmd/goqjs 2
-```
+| example | role |
+|---------|------|
+| `examples/sleep.js` | async + `sleep` — I/O-style multiplexing |
+| `examples/fib.js` | recursive fib — CPU-bound on one Runtime |
+| `examples/fact.js` | BigInt factorial — CPU-bound on one Runtime |
 
 ## How it works
 
 - **C/QuickJS owns the event loop** (`js_std_loop` from `quickjs-libc`).
-- `sleep(ms)` is `os.sleepAsync` — a Promise resolved by the QJS timer poll, so it does not block the JS thread.
-- `resp.write` is a cgo-exported Go callback that prints to stdout and syncs immediately.
-- Go locks one OS thread for the runtime; main waits until `js_std_loop` returns (idle: no pending jobs/timers).
+- `runtime.New(ctx, run)` installs `sleep` / `resp`, binds the `run` function expression as the `Run` entrypoint, and keeps the loop alive via a wake pipe + `os.setReadHandler`.
+- `r.Run(args...)` JSON-encodes args, wakes the loop thread, invokes that function (awaiting Promises), and blocks until settle.
+- Context cancel clears the wake handler so `js_std_loop` can exit when idle; Go does not auto-cancel.
