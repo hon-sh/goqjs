@@ -63,11 +63,11 @@ stdlib.Install(r, stdlib.Options{Console: true, Fetch: true, ...})
 - 可选：`globalThis.sleep = ms => new Promise(r => setTimeout(r, ms))`。  
 - examples 用 `console.log`，不再用 `resp.write`。
 
-### `cmd/goqjs-serve`（规划）
+### `cmd/goqjs-serve`
 
-- JS：`run(req, res)` 语义对象。  
-- Go/C：用 **`req_id`（+ 已有 `go_id`）** 定位底层写回；**不用 fd 当公共协议**。  
-- Go 实现层可以很「脏」（map + ResponseWriter），不必在 runtime 包导出 HTTP 语义类型。
+- JS：`run(req, res)` 语义对象（examples：`serve-*.js`）。  
+- Go：用 **`req_id`（+ Runtime `go_id`）** 定位 `ResponseWriter`；包装层把 `(reqId, metaJSON)` 转成 `req`/`res`。  
+- 默认安装 stdlib `console` + `fetch`，以及便捷 `sleep`。
 
 ---
 
@@ -92,7 +92,7 @@ stdlib.Install(r, stdlib.Options{Console: true, Fetch: true, ...})
 1. Boot → Go；去掉内核 `resp`；Inject 闸门 + host/async 桥  
 2. `stdlib`：console，再 fetch 最小子集  
 3. 改 `cmd/goqjs` + examples + 测试  
-4. `cmd/goqjs-serve` 骨架（req_id + res.write）  
+4. ~~`cmd/goqjs-serve` 骨架（req_id + res.write）~~（已有）  
 
 ---
 
