@@ -9,24 +9,33 @@ import (
 	"strings"
 	"sync"
 
+	"goqjs/pool"
 	"goqjs/runtime"
+	"goqjs/stdlib"
 )
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: goqjs (-e code | -f file) [arg...]\n")
+		fmt.Fprintf(os.Stderr, "usage: goqjs [-c N] (-e code | -f file) [arg...]\n")
+		fmt.Fprintf(os.Stderr, "  -c N      runtime pool size (default 1)\n")
 		fmt.Fprintf(os.Stderr, "  -e code   JS function expression for run\n")
 		fmt.Fprintf(os.Stderr, "  -f file   read run function expression from file\n")
-		fmt.Fprintf(os.Stderr, "  each arg starts one concurrent r.Run(arg)\n")
+		fmt.Fprintf(os.Stderr, "  each arg starts one concurrent pool.Run(arg)\n")
 		fmt.Fprintf(os.Stderr, "\nexamples:\n")
 		fmt.Fprintf(os.Stderr, "  goqjs -f examples/sleep.js 3 5 6\n")
-		fmt.Fprintf(os.Stderr, "  goqjs -f examples/fib.js 32 33 34\n")
+		fmt.Fprintf(os.Stderr, "  goqjs -c 2 -f examples/fib.js 32 33 34 35\n")
 		fmt.Fprintf(os.Stderr, "  goqjs -f examples/fact.js 20000 20000\n")
 	}
 
+	workers := flag.Int("c", 1, "runtime pool size")
 	code := flag.String("e", "", "JS function expression for run")
 	file := flag.String("f", "", "file containing JS function expression for run")
 	flag.Parse()
+
+	if *workers < 1 {
+		fmt.Fprintf(os.Stderr, "goqjs: -c must be >= 1\n")
+		os.Exit(2)
+	}
 
 	hasE := *code != ""
 	hasF := *file != ""
@@ -73,9 +82,20 @@ func main() {
 		}
 	}
 
+	setup := func(r *runtime.Runtime) error {
+		if err := stdlib.Install(r, stdlib.Options{Console: true}); err != nil {
+			return err
+		}
+		// Convenience sugar for examples; not part of runtime core.
+		return r.Eval(`globalThis.sleep = function(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
+};`)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-	r, err := runtime.New(ctx, run)
+	p, err := pool.New(ctx, run, *workers, setup)
 	if err != nil {
+		cancel()
 		fmt.Fprintf(os.Stderr, "goqjs: %v\n", err)
 		os.Exit(1)
 	}
@@ -83,12 +103,12 @@ func main() {
 	var wg sync.WaitGroup
 	for _, arg := range runArgs {
 		wg.Go(func() {
-			if err := r.Run(arg); err != nil {
+			if err := p.Run(arg); err != nil {
 				fmt.Fprintf(os.Stderr, "goqjs: run(%v): %v\n", arg, err)
 			}
 		})
 	}
 	wg.Wait()
 	cancel()
-	<-r.Done()
+	<-p.Done()
 }

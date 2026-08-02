@@ -4,5 +4,5 @@ async function(n) {
     return fib(x - 1) + fib(x - 2);
   }
   const v = fib(n);
-  await resp.write(n, String(v));
+  console.log("[" + n + "]" + v);
 }

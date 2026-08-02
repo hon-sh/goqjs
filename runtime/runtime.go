@@ -15,7 +15,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,17 +22,22 @@ import (
 	"unsafe"
 )
 
-//export goqjs_host_write
-func goqjs_host_write(callID C.int, s *C.char) {
-	fmt.Fprintf(os.Stdout, "[%d]%s\n", int(callID), C.GoString(s))
-	_ = os.Stdout.Sync()
+var (
+	registry sync.Map // int32 -> *Runtime
+	nextGoID atomic.Int32
+)
+
+func lookupRuntime(id int32) *Runtime {
+	v, ok := registry.Load(id)
+	if !ok {
+		return nil
+	}
+	return v.(*Runtime)
 }
 
 //export goqjs_host_done
-func goqjs_host_done(id C.int, ok C.int, errMsg *C.char) {
-	activeMu.Lock()
-	r := active
-	activeMu.Unlock()
+func goqjs_host_done(goID C.int, id C.int, ok C.int, errMsg *C.char) {
+	r := lookupRuntime(int32(goID))
 	if r == nil {
 		return
 	}
@@ -41,20 +45,15 @@ func goqjs_host_done(id C.int, ok C.int, errMsg *C.char) {
 }
 
 //export goqjs_host_wake_process
-func goqjs_host_wake_process() {
-	activeMu.Lock()
-	r := active
-	activeMu.Unlock()
+func goqjs_host_wake_process(goID C.int) {
+	r := lookupRuntime(int32(goID))
 	if r == nil {
 		return
 	}
+	r.drainCtrl()
+	r.drainAsyncSettles()
 	r.drainRequests()
 }
-
-var (
-	activeMu sync.Mutex
-	active   *Runtime
-)
 
 type request struct {
 	id   int
@@ -63,11 +62,21 @@ type request struct {
 
 // Runtime is a single QuickJS instance with an event loop on one OS thread.
 type Runtime struct {
+	id       int32
 	ctx      context.Context
 	handleMu sync.RWMutex
 	handle   *C.goqjs_rt
 
+	mu     sync.Mutex
+	frozen bool
+
+	hostSync  map[string]HostFunc
+	hostAsync map[string]AsyncHostFunc
+
 	reqCh    chan request
+	ctrlCh   chan ctrlMsg
+	asyncCh  chan asyncSettle
+	asyncID  atomic.Int64
 	pending  sync.Map // id -> chan error
 	nextID   atomic.Int64
 	loopDone chan struct{}
@@ -75,15 +84,11 @@ type Runtime struct {
 	started  chan struct{}
 }
 
-// New creates a QuickJS runtime, installs sleep/resp helpers, binds run as the
-// function invoked by Run, and starts js_std_loop on a dedicated OS thread.
+// New creates a QuickJS runtime, evaluates the core boot (std/os, timers,
+// invoke), binds run, and starts js_std_loop. Host APIs (console/fetch) are not
+// installed — use goqjs/stdlib.Install or Inject* before the first Run.
 //
-// run is a JS function expression (not a full script), e.g.
-//
-//	async function(c) { await resp.write(c, "hi"); }
-//	async (a, b) => { ... }
-//
-// The loop exits after ctx is cancelled and idle.
+// run is a JS function expression, e.g. `async function(c) { ... }`.
 func New(ctx context.Context, run string) (*Runtime, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("nil context")
@@ -93,20 +98,17 @@ func New(ctx context.Context, run string) (*Runtime, error) {
 		return nil, fmt.Errorf("empty run")
 	}
 
+	id := nextGoID.Add(1)
 	r := &Runtime{
+		id:       id,
 		ctx:      ctx,
 		reqCh:    make(chan request, 64),
+		ctrlCh:   make(chan ctrlMsg, 16),
+		asyncCh:  make(chan asyncSettle, 64),
 		loopDone: make(chan struct{}),
 		started:  make(chan struct{}),
 	}
-
-	activeMu.Lock()
-	if active != nil {
-		activeMu.Unlock()
-		return nil, fmt.Errorf("only one goqjs runtime is supported")
-	}
-	active = r
-	activeMu.Unlock()
+	registry.Store(id, r)
 
 	go r.loop(run)
 
@@ -127,15 +129,9 @@ func (r *Runtime) loop(run string) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(r.loopDone)
-	defer func() {
-		activeMu.Lock()
-		if active == r {
-			active = nil
-		}
-		activeMu.Unlock()
-	}()
+	defer registry.Delete(r.id)
 
-	h := C.goqjs_create()
+	h := C.goqjs_create(C.int32_t(r.id))
 	if h == nil {
 		r.startErr = fmt.Errorf("goqjs_create failed")
 		close(r.started)
@@ -151,15 +147,20 @@ func (r *Runtime) loop(run string) {
 		C.goqjs_destroy(h)
 	}()
 
-	// Bind the caller's function expression; storage name is an internal detail.
+	if err := r.evalOnLoop(h, coreBoot, "<boot>", 1); err != nil {
+		r.startErr = err
+		close(r.started)
+		return
+	}
+	if err := r.evalOnLoop(h, asyncHelperJS, "<async-helper>", 0); err != nil {
+		r.startErr = err
+		close(r.started)
+		return
+	}
+
 	bind := "globalThis.__goqjs_run = (" + run + ");"
-	cs := C.CString(bind)
-	cname := C.CString("<run>")
-	ret := C.goqjs_eval(h, cs, cname, 0)
-	C.free(unsafe.Pointer(cs))
-	C.free(unsafe.Pointer(cname))
-	if ret != 0 {
-		r.startErr = fmt.Errorf("eval run failed")
+	if err := r.evalOnLoop(h, bind, "<run>", 0); err != nil {
+		r.startErr = fmt.Errorf("eval run: %w", err)
 		close(r.started)
 		return
 	}
@@ -172,7 +173,6 @@ func (r *Runtime) loop(run string) {
 
 	close(r.started)
 
-	// Cancel → stop loop (clears wake handler; exits when idle).
 	stopDone := make(chan struct{})
 	go func() {
 		defer close(stopDone)
@@ -183,7 +183,6 @@ func (r *Runtime) loop(run string) {
 	C.goqjs_loop(h)
 	<-stopDone
 
-	// Fail any still-waiting Run callers.
 	r.pending.Range(func(key, value any) bool {
 		ch := value.(chan error)
 		select {
@@ -193,6 +192,18 @@ func (r *Runtime) loop(run string) {
 		r.pending.Delete(key)
 		return true
 	})
+}
+
+func (r *Runtime) evalOnLoop(h *C.goqjs_rt, script, filename string, module int) error {
+	cs := C.CString(script)
+	cname := C.CString(filename)
+	ret := C.goqjs_eval(h, cs, cname, C.int(module))
+	C.free(unsafe.Pointer(cs))
+	C.free(unsafe.Pointer(cname))
+	if ret != 0 {
+		return fmt.Errorf("eval %s failed", filename)
+	}
+	return nil
 }
 
 func (r *Runtime) wake() {
@@ -240,7 +251,7 @@ func (r *Runtime) finish(id int, ok bool, errMsg string) {
 }
 
 // Run invokes the function expression passed to New with args (int/string/bool)
-// and waits until the returned value settles (awaits Promises).
+// and waits until the returned value settles. The first Run freezes host injection.
 func (r *Runtime) Run(args ...any) error {
 	if err := checkArgs(args); err != nil {
 		return err
@@ -249,6 +260,10 @@ func (r *Runtime) Run(args ...any) error {
 	if err != nil {
 		return err
 	}
+
+	r.mu.Lock()
+	r.freezeLocked()
+	r.mu.Unlock()
 
 	id := int(r.nextID.Add(1))
 	done := make(chan error, 1)

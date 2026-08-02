@@ -8,5 +8,5 @@ async function(n) {
     return r;
   }
   const v = fact(n);
-  await resp.write(n, String(v));
+  console.log("[" + n + "]" + v);
 }

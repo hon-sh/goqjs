@@ -11,9 +11,12 @@
 #include "../third_party/quickjs/quickjs-libc.h"
 
 /* Implemented in Go (cgo //export). */
-extern void goqjs_host_write(int call_id, char *s);
-extern void goqjs_host_done(int id, int ok, char *err);
-extern void goqjs_host_wake_process(void);
+extern void goqjs_host_done(int go_id, int id, int ok, char *err);
+extern void goqjs_host_wake_process(int go_id);
+/* Returns malloc'd result string (caller frees); on error sets *err (malloc'd). */
+extern char *goqjs_host_call(int go_id, char *name, char *payload, char **err);
+/* Returns async id (>0), or 0 and *err set. */
+extern int goqjs_host_async_start(int go_id, char *name, char *payload, char **err);
 
 struct goqjs_rt {
     JSRuntime *rt;
@@ -21,6 +24,7 @@ struct goqjs_rt {
     int wake_r;
     int wake_w;
     volatile int stop;
+    int32_t go_id;
 };
 
 static JSContext *JS_NewCustomContext(JSRuntime *rt)
@@ -33,32 +37,17 @@ static JSContext *JS_NewCustomContext(JSRuntime *rt)
     return ctx;
 }
 
-static JSValue js_resp_write(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
-{
-    int call_id;
-    const char *s;
-
-    (void)this_val;
-    if (argc < 2)
-        return JS_ThrowTypeError(ctx, "respWrite(callId, s) expects 2 args");
-    if (JS_ToInt32(ctx, &call_id, argv[0]))
-        return JS_EXCEPTION;
-    s = JS_ToCString(ctx, argv[1]);
-    if (!s)
-        return JS_EXCEPTION;
-    goqjs_host_write(call_id, (char *)s);
-    JS_FreeCString(ctx, s);
-    return JS_UNDEFINED;
-}
-
 static JSValue js_run_done(JSContext *ctx, JSValueConst this_val,
                            int argc, JSValueConst *argv)
 {
+    goqjs_rt *r;
     int id, ok;
     const char *err = NULL;
 
     (void)this_val;
+    r = JS_GetContextOpaque(ctx);
+    if (!r)
+        return JS_ThrowTypeError(ctx, "missing goqjs runtime");
     if (argc < 2)
         return JS_ThrowTypeError(ctx, "__goqjs_done(id, ok, err?) expects >=2 args");
     if (JS_ToInt32(ctx, &id, argv[0]))
@@ -69,14 +58,83 @@ static JSValue js_run_done(JSContext *ctx, JSValueConst this_val,
         if (!err)
             return JS_EXCEPTION;
     }
-    goqjs_host_done(id, ok, (char *)err);
+    goqjs_host_done(r->go_id, id, ok, (char *)err);
     if (err)
         JS_FreeCString(ctx, err);
     return JS_UNDEFINED;
 }
 
-/* Drain wake pipe and ask Go to process the invoke queue.
- * If stop was requested, clear the read handler so js_std_loop can exit. */
+static JSValue js_host_call(JSContext *ctx, JSValueConst this_val,
+                            int argc, JSValueConst *argv)
+{
+    goqjs_rt *r;
+    const char *name, *payload;
+    char *err = NULL, *result;
+    JSValue ret;
+
+    (void)this_val;
+    r = JS_GetContextOpaque(ctx);
+    if (!r)
+        return JS_ThrowTypeError(ctx, "missing goqjs runtime");
+    if (argc < 2)
+        return JS_ThrowTypeError(ctx, "__goqjs_host(name, payload) expects 2 args");
+    name = JS_ToCString(ctx, argv[0]);
+    if (!name)
+        return JS_EXCEPTION;
+    payload = JS_ToCString(ctx, argv[1]);
+    if (!payload) {
+        JS_FreeCString(ctx, name);
+        return JS_EXCEPTION;
+    }
+    result = goqjs_host_call(r->go_id, (char *)name, (char *)payload, &err);
+    JS_FreeCString(ctx, name);
+    JS_FreeCString(ctx, payload);
+    if (err) {
+        ret = JS_ThrowInternalError(ctx, "%s", err);
+        free(err);
+        free(result);
+        return ret;
+    }
+    if (!result)
+        return JS_UNDEFINED;
+    ret = JS_NewString(ctx, result);
+    free(result);
+    return ret;
+}
+
+static JSValue js_async_start(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv)
+{
+    goqjs_rt *r;
+    const char *name, *payload;
+    char *err = NULL;
+    int id;
+
+    (void)this_val;
+    r = JS_GetContextOpaque(ctx);
+    if (!r)
+        return JS_ThrowTypeError(ctx, "missing goqjs runtime");
+    if (argc < 2)
+        return JS_ThrowTypeError(ctx, "__goqjs_async_start(name, payload) expects 2 args");
+    name = JS_ToCString(ctx, argv[0]);
+    if (!name)
+        return JS_EXCEPTION;
+    payload = JS_ToCString(ctx, argv[1]);
+    if (!payload) {
+        JS_FreeCString(ctx, name);
+        return JS_EXCEPTION;
+    }
+    id = goqjs_host_async_start(r->go_id, (char *)name, (char *)payload, &err);
+    JS_FreeCString(ctx, name);
+    JS_FreeCString(ctx, payload);
+    if (id <= 0) {
+        JSValue ret = JS_ThrowInternalError(ctx, "%s", err ? err : "async_start failed");
+        free(err);
+        return ret;
+    }
+    return JS_NewInt32(ctx, id);
+}
+
 static JSValue js_wake_drain(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv)
 {
@@ -97,7 +155,7 @@ static JSValue js_wake_drain(JSContext *ctx, JSValueConst this_val,
         if (n < 0) {
             if (errno == EINTR)
                 continue;
-            break; /* EAGAIN / empty */
+            break;
         }
         if (n == 0)
             break;
@@ -111,7 +169,7 @@ static JSValue js_wake_drain(JSContext *ctx, JSValueConst this_val,
         return JS_UNDEFINED;
     }
 
-    goqjs_host_wake_process();
+    goqjs_host_wake_process(r->go_id);
     return JS_UNDEFINED;
 }
 
@@ -149,7 +207,7 @@ static int set_nonblock(int fd)
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-goqjs_rt *goqjs_create(void)
+goqjs_rt *goqjs_create(int32_t go_id)
 {
     goqjs_rt *r;
     JSValue global_obj;
@@ -160,6 +218,7 @@ goqjs_rt *goqjs_create(void)
         return NULL;
     r->wake_r = -1;
     r->wake_w = -1;
+    r->go_id = go_id;
 
     if (pipe(fds) != 0) {
         fprintf(stderr, "goqjs: pipe failed\n");
@@ -191,44 +250,15 @@ goqjs_rt *goqjs_create(void)
     js_std_add_helpers(r->ctx, -1, NULL);
 
     global_obj = JS_GetGlobalObject(r->ctx);
-    JS_SetPropertyStr(r->ctx, global_obj, "respWrite",
-                      JS_NewCFunction(r->ctx, js_resp_write, "respWrite", 2));
     JS_SetPropertyStr(r->ctx, global_obj, "__goqjs_done",
                       JS_NewCFunction(r->ctx, js_run_done, "__goqjs_done", 3));
+    JS_SetPropertyStr(r->ctx, global_obj, "__goqjs_host",
+                      JS_NewCFunction(r->ctx, js_host_call, "__goqjs_host", 2));
+    JS_SetPropertyStr(r->ctx, global_obj, "__goqjs_async_start",
+                      JS_NewCFunction(r->ctx, js_async_start, "__goqjs_async_start", 2));
     JS_SetPropertyStr(r->ctx, global_obj, "__goqjs_wake_drain",
                       JS_NewCFunction(r->ctx, js_wake_drain, "__goqjs_wake_drain", 0));
     JS_FreeValue(r->ctx, global_obj);
-
-    /* std/os globals + host helpers used by every job. */
-    {
-        const char *boot =
-            "import * as std from 'std';\n"
-            "import * as os from 'os';\n"
-            "globalThis.std = std;\n"
-            "globalThis.os = os;\n"
-            "globalThis.sleep = function(ms) { return os.sleepAsync(ms); };\n"
-            "globalThis.resp = {\n"
-            "  write: async function(callId, s) { respWrite(callId, s); }\n"
-            "};\n"
-            "globalThis.__goqjs_invoke = function(id, jsonArgs) {\n"
-            "  let args;\n"
-            "  try { args = JSON.parse(jsonArgs); }\n"
-            "  catch (e) { __goqjs_done(id, false, String(e)); return; }\n"
-            "  if (typeof globalThis.__goqjs_run !== 'function') {\n"
-            "    __goqjs_done(id, false, '__goqjs_run is not defined');\n"
-            "    return;\n"
-            "  }\n"
-            "  Promise.resolve(__goqjs_run.apply(undefined, args)).then(\n"
-            "    function() { __goqjs_done(id, true, null); },\n"
-            "    function(e) {\n"
-            "      var msg = (e && e.stack) ? String(e.stack) : String(e);\n"
-            "      __goqjs_done(id, false, msg);\n"
-            "    }\n"
-            "  );\n"
-            "};\n";
-        if (eval_buf(r->ctx, boot, "<boot>", JS_EVAL_TYPE_MODULE))
-            goto fail;
-    }
 
     return r;
 
@@ -308,6 +338,34 @@ int goqjs_invoke(goqjs_rt *r, int id, const char *json_args)
     }
     JS_FreeValue(r->ctx, ret);
     return 0;
+}
+
+int goqjs_async_settle(goqjs_rt *r, int id, int ok, const char *payload)
+{
+    char *script;
+    int ret, n;
+
+    if (!r || !r->ctx)
+        return -1;
+    if (!payload)
+        payload = "";
+    /* Escape payload as JSON string via Go side — payload must already be a JS
+     * string literal content safe for embedding, or a JSON text used as arg.
+     * We pass payload as JSON.parse argument: settle(id, ok, payloadJSON). */
+    n = snprintf(NULL, 0,
+                 "__goqjs_async_settle(%d, %s, %s);",
+                 id, ok ? "true" : "false", payload);
+    if (n < 0)
+        return -1;
+    script = malloc((size_t)n + 1);
+    if (!script)
+        return -1;
+    snprintf(script, (size_t)n + 1,
+             "__goqjs_async_settle(%d, %s, %s);",
+             id, ok ? "true" : "false", payload);
+    ret = eval_buf(r->ctx, script, "<async-settle>", JS_EVAL_TYPE_GLOBAL);
+    free(script);
+    return ret;
 }
 
 void goqjs_destroy(goqjs_rt *r)
