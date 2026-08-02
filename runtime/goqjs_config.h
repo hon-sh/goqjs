@@ -1,0 +1,4 @@
+#ifndef GOQJS_CONFIG_H
+#define GOQJS_CONFIG_H
+#define CONFIG_VERSION "2026-06-04"
+#endif
