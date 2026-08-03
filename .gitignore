@@ -30,6 +30,9 @@ profile.cov
 go.work
 go.work.sum
 
+# Local module cache (optional; used when sandbox blocks ~/go/pkg/mod)
+.gomodcache/
+
 # env file
 .env
 

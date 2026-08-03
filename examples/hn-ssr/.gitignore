@@ -2,3 +2,5 @@ node_modules/
 dist/
 hn-ssr
 hn-ssr-linux-x64
+hn.db
+hn.db-*

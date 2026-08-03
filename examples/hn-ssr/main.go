@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"goqjs/examples/hn-ssr/hnapi"
 	"goqjs/pool"
 	"goqjs/runtime"
 	"goqjs/stdlib"
@@ -34,6 +35,8 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	workers := flag.Int("c", 2, "goqjs runtime pool size")
 	enableCache := flag.Bool("cache", false, "cache HN Firebase GET responses (FIFO, max 100 URLs)")
+	enableHNAPI := flag.Bool("hnapi", false, "use local SQLite HN API (/api/*) instead of JS Firebase fan-out")
+	hnapiDB := flag.String("hnapi-db", "", "SQLite for -hnapi: path, file:URI, or :memory: (default :memory:). Ex: ./hn.db | file:./hn.db | :memory:")
 	clientJS := flag.String("client-js", "on", "include client JS for hydrate: on|off")
 	flag.Parse()
 
@@ -68,14 +71,42 @@ func main() {
 		os.Exit(1)
 	}
 
+	hnCache := newHNFetchCache(100)
+	cacheTransport := &hnCacheTransport{
+		base:  http.DefaultTransport,
+		cache: hnCache,
+	}
+
+	// JS fetch client: Firebase FIFO only when -cache and NOT -hnapi.
 	fetchClient := &http.Client{Timeout: 30 * time.Second}
-	var hnCache *hnFetchCache
-	if *enableCache {
-		hnCache = newHNFetchCache(100)
-		fetchClient.Transport = &hnCacheTransport{
-			base:  http.DefaultTransport,
-			cache: hnCache,
+	var logCache *hnFetchCache
+	if *enableCache && !*enableHNAPI {
+		fetchClient.Transport = cacheTransport
+		logCache = hnCache
+	}
+
+	var store *hnapi.Store
+	var syncer *hnapi.Syncer
+	ssrAPIBase := ""
+	hnapiDBResolved := ""
+	if *enableHNAPI {
+		cfg := hnapi.DefaultConfig()
+		cfg.DB = normalizeSQLiteDB(*hnapiDB)
+		hnapiDBResolved = cfg.DB
+		syncClient := &http.Client{Timeout: cfg.HTTPTimeout}
+		if *enableCache {
+			syncClient.Transport = cacheTransport
+			logCache = hnCache
 		}
+		cfg.HTTPClient = syncClient
+		store, err = hnapi.Open(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hn-ssr: hnapi open: %v\n", err)
+			os.Exit(1)
+		}
+		defer store.Close()
+		syncer = hnapi.NewSyncer(store, cfg)
+		ssrAPIBase = listenLoopbackBase(*addr) + "/api"
 	}
 
 	results := &resultStore{}
@@ -116,6 +147,12 @@ func main() {
 		if err := r.Eval(qjsPolyfills); err != nil {
 			return fmt.Errorf("eval polyfills: %w", err)
 		}
+		if ssrAPIBase != "" {
+			inj := fmt.Sprintf(`globalThis.__HN_API_BASE__ = %q;`, ssrAPIBase)
+			if err := r.Eval(inj); err != nil {
+				return fmt.Errorf("eval HN_API_BASE: %w", err)
+			}
+		}
 		if err := r.Eval(string(ssrJS)); err != nil {
 			return fmt.Errorf("eval ssr.js: %w", err)
 		}
@@ -137,12 +174,15 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/assets/", withHashedAssetCache(http.FileServer(http.FS(clientFS))))
+	if store != nil && syncer != nil {
+		registerHNAPI(mux, store, syncer)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if strings.HasPrefix(req.URL.Path, "/assets/") {
+		if strings.HasPrefix(req.URL.Path, "/assets/") || strings.HasPrefix(req.URL.Path, "/api/") {
 			http.NotFound(w, req)
 			return
 		}
@@ -152,8 +192,8 @@ func main() {
 		url := req.URL.RequestURI()
 
 		var hits0, misses0 int64
-		if hnCache != nil {
-			hits0, misses0 = hnCache.stats()
+		if logCache != nil {
+			hits0, misses0 = logCache.stats()
 		}
 
 		tRun := time.Now()
@@ -177,12 +217,12 @@ func main() {
 		page := tpl
 		page = strings.Replace(page, "<!--app-html-->", out.HTML, 1)
 		if clientJSOn {
-			page = strings.Replace(
-				page,
-				"<!--app-data-->",
-				`<script>window.__INITIAL_DATA__=`+serializeJSON(out.Data)+`</script>`,
-				1,
-			)
+			boot := `<script>window.__INITIAL_DATA__=` + serializeJSON(out.Data)
+			if *enableHNAPI {
+				boot += `;window.__HN_API_BASE__="/api"`
+			}
+			boot += `</script>`
+			page = strings.Replace(page, "<!--app-data-->", boot, 1)
 		} else {
 			page = strings.Replace(page, "<!--app-data-->", "", 1)
 		}
@@ -196,8 +236,8 @@ func main() {
 		writeMs := time.Since(tWrite).Milliseconds()
 
 		cachePart := ""
-		if hnCache != nil {
-			hits1, misses1 := hnCache.stats()
+		if logCache != nil {
+			hits1, misses1 := logCache.stats()
 			cachePart = fmt.Sprintf(" fetch_cache=%d/%d",
 				hits1-hits0, (hits1-hits0)+(misses1-misses0))
 		}
@@ -221,15 +261,26 @@ func main() {
 	}()
 
 	cacheNote := "off"
-	if *enableCache {
+	switch {
+	case *enableCache && *enableHNAPI:
+		cacheNote = "syncer (HN GET FIFO max 100)"
+	case *enableCache:
 		cacheNote = "on (HN GET FIFO max 100)"
 	}
 	jsNote := "on"
 	if !clientJSOn {
 		jsNote = "off"
 	}
-	fmt.Fprintf(os.Stderr, "hn-ssr: listening on %s (pool=%d cache=%s client-js=%s)\n",
-		*addr, *workers, cacheNote, jsNote)
+	hnNote := "off"
+	if *enableHNAPI {
+		if hnapiDBResolved == hnapi.MemoryDB {
+			hnNote = "on db=:memory:"
+		} else {
+			hnNote = "on db=" + hnapiDBResolved
+		}
+	}
+	fmt.Fprintf(os.Stderr, "hn-ssr: listening on %s (pool=%d hnapi=%s cache=%s client-js=%s)\n",
+		*addr, *workers, hnNote, cacheNote, jsNote)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "hn-ssr: %v\n", err)
 		os.Exit(1)
@@ -245,6 +296,20 @@ func parseOnOff(name, v string) (bool, error) {
 	default:
 		return false, fmt.Errorf("-%s must be on or off (got %q)", name, v)
 	}
+}
+
+// normalizeSQLiteDB maps flag values to a crawshaw-openable URI.
+// Empty and ":memory:" → hnapi.MemoryDB (shared in-memory; pool-safe).
+// Plain paths become file:….
+func normalizeSQLiteDB(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == ":memory:" {
+		return hnapi.MemoryDB
+	}
+	if strings.HasPrefix(s, "file:") {
+		return s
+	}
+	return "file:" + s
 }
 
 var clientScriptRE = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>\s*`)

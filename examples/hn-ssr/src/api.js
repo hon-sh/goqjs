@@ -1,12 +1,19 @@
-const BASE = 'https://hacker-news.firebaseio.com/v0'
+const FIREBASE_BASE = 'https://hacker-news.firebaseio.com/v0'
 
-async function getJSON(path, { retries = 2 } = {}) {
+function hnApiBase() {
+  if (typeof globalThis.__HN_API_BASE__ === 'string' && globalThis.__HN_API_BASE__) {
+    return globalThis.__HN_API_BASE__
+  }
+  return null
+}
+
+async function getJSON(url, { retries = 2 } = {}) {
   let lastErr
   for (let i = 0; i <= retries; i++) {
     try {
-      const res = await fetch(`${BASE}${path}`)
+      const res = await fetch(url)
       if (!res.ok) {
-        throw new Error(`HN API ${path}: ${res.status}`)
+        throw new Error(`HN API ${url}: ${res.status}`)
       }
       return await res.json()
     } catch (err) {
@@ -35,11 +42,15 @@ async function mapPool(items, limit, fn) {
 }
 
 export function getItem(id) {
-  return getJSON(`/item/${id}.json`)
+  return getJSON(`${FIREBASE_BASE}/item/${id}.json`)
 }
 
 export async function getTopStories(limit = 30) {
-  const ids = await getJSON('/topstories.json')
+  const base = hnApiBase()
+  if (base) {
+    return getJSON(`${base}/topstories?limit=${limit}`)
+  }
+  const ids = await getJSON(`${FIREBASE_BASE}/topstories.json`)
   const slice = ids.slice(0, limit)
   const items = await mapPool(slice, 8, (id) => getItem(id))
   return items.filter(Boolean)
@@ -47,6 +58,11 @@ export async function getTopStories(limit = 30) {
 
 /** Flatten comments to a shallow tree (depth-limited) for a minimal item page. */
 export async function getItemWithComments(id, maxDepth = 2) {
+  const base = hnApiBase()
+  if (base) {
+    return getJSON(`${base}/item/${id}?depth=${maxDepth}`)
+  }
+
   const item = await getItem(id)
   if (!item) return null
 
