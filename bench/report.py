@@ -9,7 +9,15 @@ import re
 from pathlib import Path
 
 
-SCENARIOS = ("latency", "concurrency", "cpu-parallel")
+# Known order; unknown scenario names from metrics still appear after these.
+SCENARIO_ORDER = ("latency", "concurrency", "cpu-parallel", "render-heavy")
+
+SCENARIO_TITLES = {
+    "latency": "Latency (low concurrency)",
+    "concurrency": "Concurrency / throughput",
+    "cpu-parallel": "CPU-parallel (heavy fib)",
+    "render-heavy": "Render-heavy (long list, little/no sleep)",
+}
 
 
 def ms(x: float | None) -> str:
@@ -86,7 +94,7 @@ def parse_txt(path: Path) -> tuple[dict[str, str], dict[tuple[str, str], dict]]:
     blocks = re.split(r"\n----- ", text)
     for block in blocks[1:]:
         header, _, body = block.partition(" -----")
-        m = re.match(r"(\S+)\s*/\s*(latency|concurrency|cpu-parallel)\b", header.strip())
+        m = re.match(r"(\S+)\s*/\s*([a-z0-9-]+)\b", header.strip())
         if not m:
             continue
         runtime, scenario = m.group(1), m.group(2)
@@ -144,10 +152,17 @@ def collect_json_dir(metrics_dir: Path) -> dict[tuple[str, str], dict]:
         if "." not in stem:
             continue
         runtime, scenario = stem.split(".", 1)
-        if scenario not in SCENARIOS:
-            continue
         rows[(runtime, scenario)] = load_oha_json(p)
     return rows
+
+
+def ordered_scenarios(rows: dict[tuple[str, str], dict]) -> list[str]:
+    present = {s for _, s in rows}
+    ordered = [s for s in SCENARIO_ORDER if s in present]
+    for s in sorted(present):
+        if s not in ordered:
+            ordered.append(s)
+    return ordered
 
 
 def render_md(
@@ -168,14 +183,9 @@ def render_md(
             lines.append(f"| `{k}` | {meta[k]} |")
         lines.append("")
 
-    scenario_titles = {
-        "latency": "Latency (low concurrency)",
-        "concurrency": "Concurrency / throughput",
-        "cpu-parallel": "CPU-parallel (heavy fib)",
-    }
-
-    for scenario in SCENARIOS:
-        lines.append(f"## {scenario_titles[scenario]}")
+    for scenario in ordered_scenarios(rows):
+        title_s = SCENARIO_TITLES.get(scenario, scenario)
+        lines.append(f"## {title_s}")
         lines.append("")
         lines.append(
             "| runtime | success | RPS | avg ms | p50 ms | p95 ms | p99 ms | max ms |"

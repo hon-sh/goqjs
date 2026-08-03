@@ -4,7 +4,7 @@ Snapshot from `results/20260802-223605` (machine: 16 logical CPUs).
 Workload: recursive `fib(n)` over HTTP (`/fib?n=`), same algorithm for Bun / Deno / goqjs-serve.  
 Deno ran with `deno_parallel=0` (default single `deno serve`, no `--parallel`).
 
-How to reproduce: see [`README.md`](./README.md) (`./bench/run.sh`).
+How to reproduce: see [`fib/README.md`](./fib/README.md) (`make -C bench fib`).
 
 ---
 
@@ -73,11 +73,13 @@ How to reproduce: see [`README.md`](./README.md) (`./bench/run.sh`).
 - 递归 `fib` 放大引擎差距。
 - 证据：latency 已差数倍（与并发无关）；cpu-parallel 上 **goqjs-c1 vs deno≈8×**，而本次 deno 也是单 serve 进程。
 
-**2. 线程模型（主因之二）**
+**2. 线程 / 进程模型**
 
 - goqjs：每个 Runtime **一条** `LockOSThread` + `js_std_loop`；CPU 工作在同一 isolate 上串行。`-c N` 才是 N 路并行（见 `docs/seed-1.md` / `seed-2.md`）。
-- Bun.serve：默认更容易把负载摊到多线程 → cpu-parallel 墙钟最短。
-- Deno（本次 `deno_parallel=0`）：未开 `--parallel`，仍远快于 goqjs-c1 → 主要是 **V8 单线程算得快**，不是「deno 默认 16 线程」。
+- **Bun（本次 `server_bun.js`）**：**没有**把每个 `fetch` 自动分到多条 JS 线程。`Bun.serve` 的 handler 默认仍在 **单个 JSC isolate** 上跑。多核要自己上 `Worker` 或多进程（`reusePort` / `cluster`）。bun 更快，主要来自 **JSC + 原生 HTTP 栈（uWebSockets 等）**，不是「内置请求级 JS 线程池」。
+- **Deno（本次 `deno_parallel=0`）**：未开 `--parallel`，同样是单 serve 进程；仍远快于 goqjs-c1 → 主要是 **V8 单线程算得快**。
+
+因此 cpu-parallel 上 bun > deno ≫ goqjs-c1，更应读成 **引擎 + 原生 serve 路径**，而不是「bun 默认 16 线程跑 fib」。goqjs-c16 才是显式多 isolate；和默认 bun/deno 不是同一并行模型。
 
 **3. Go 侧锁（次要）**
 
@@ -100,8 +102,8 @@ goqjs 刻意走 **「Go 宿主 + 单 JS Runtime 事件环」**（类 mini-Node�
 
 ### 后续可对比的实验
 
-- `DENO_PARALLEL=1 ./bench/run.sh`：deno 多 worker 后，与 goqjs-c16 是否仍接近。
-- 增加 **sleep / 假 I/O** 场景：预期 goqjs-c1 相对 bun/deno 的差距会缩小（更贴近产品路径）。
+- `DENO_PARALLEL=1 make -C bench fib`：deno 多 worker 后，与 goqjs-c16 是否仍接近。
+- **SSR bench**（[`ssr/`](./ssr/) → [`BENCH-ssr.md`](./BENCH-ssr.md)）：sleep + React 长列表，更贴近 I/O 复用路径。
 - 固定 `-c` 扫一遍（2/4/8/16）画吞吐曲线，找池大小收益拐点。
 
 ---
@@ -111,6 +113,6 @@ goqjs 刻意走 **「Go 宿主 + 单 JS Runtime 事件环」**（类 mini-Node�
 | 问题 | 简答 |
 |------|------|
 | 是引擎吗？ | **是**，QJS 对递归 fib 明显慢于 V8/JSC。 |
-| 是 bun/deno 多线程吗？ | **部分是**（尤其 bun）；本次 deno 未开 parallel，仍碾压 goqjs-c1。 |
+| 是 bun/deno「内置多线程跑 JS」吗？ | **基本不是**（本次配置）。bun/deno 默认都是单 isolate 跑 handler；bun 快更多来自 JSC + 原生 HTTP。多核要各自显式开 Worker / `--parallel` / 多进程。 |
 | 是 Go 单点锁吗？ | **基本不是**；串行来自单 Runtime JS 线程。 |
-| 为何要 c16？ | 用多慢实例堆吞吐，逼近「一个快引擎 / 有限并行」的墙钟，不是单请求变快。 |
+| 为何要 c16？ | 用多慢实例堆吞吐，逼近「一个快引擎」的墙钟，不是单请求变快。 |

@@ -1,0 +1,18 @@
+{
+  "name": "goqjs-bench-ssr",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "start:bun": "bun server_bun.js",
+    "start:deno": "deno serve --allow-read --host 127.0.0.1 --port ${PORT:-19200} server_deno.js"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.5.0",
+    "vite": "^6.3.5"
+  }
+}

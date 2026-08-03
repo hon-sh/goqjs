@@ -1,5 +1,5 @@
 async function(req, res) {
-  // Keep fib algorithm in sync with bench/fib/fib.js
+  // Keep fib algorithm in sync with fib.js
   const n = Number((req.query.match(/(?:^|&)n=(\d+)/) || [])[1] || 10);
   function fib(x) {
     if (x < 2) return x;

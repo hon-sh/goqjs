@@ -1,0 +1,3 @@
+# Local bench artifacts (see also ssr/.gitignore)
+results/
+.bin/

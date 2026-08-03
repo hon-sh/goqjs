@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
-# Sequential fib HTTP bench: bun → deno → goqjs (-c 1) → goqjs (-c N).
-# Writes results/<stamp>.txt (full log) + results/<stamp>.md (comparison tables).
-# Requires: oha, bun, deno (>=2), go, python3.
+# Sequential SSR bench: bun → deno → goqjs (-c 1) → goqjs (-c N).
+# Workload: sleep(delay) + build fixed Array(n) + React renderToString (long list).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PORT="${PORT:-19100}"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SSR="$(cd "$(dirname "$0")" && pwd)"
+PORT="${PORT:-19200}"
 HOST="127.0.0.1"
-BASE="http://${HOST}:${PORT}/fib"
+BASE="http://${HOST}:${PORT}/"
 OUT_DIR="${ROOT}/bench/results"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-OUT_TXT="${OUT_DIR}/${STAMP}.txt"
-OUT_MD="${OUT_DIR}/${STAMP}.md"
-METRICS_DIR="${OUT_DIR}/${STAMP}.metrics"
+OUT_TXT="${OUT_DIR}/ssr-${STAMP}.txt"
+OUT_MD="${OUT_DIR}/ssr-${STAMP}.md"
+METRICS_DIR="${OUT_DIR}/ssr-${STAMP}.metrics"
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
 GOQJS_C="${GOQJS_C:-$NPROC}"
 DENO_PARALLEL="${DENO_PARALLEL:-0}"
 
-LATENCY_N="${LATENCY_N:-20}"
-CONCUR_N="${CONCUR_N:-20}"
-CPU_N="${CPU_N:-32}"
+# Query shape: n=list length, delay=fake I/O ms
+LATENCY_N="${LATENCY_N:-100}"
+LATENCY_DELAY="${LATENCY_DELAY:-5}"
+CONCUR_N="${CONCUR_N:-200}"
+CONCUR_DELAY="${CONCUR_DELAY:-20}"
+RENDER_N="${RENDER_N:-1500}"
+RENDER_DELAY="${RENDER_DELAY:-0}"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -38,6 +42,7 @@ need deno
 need go
 need curl
 need python3
+need npm
 
 OHA_VER="$(oha --version 2>&1 | head -1)"
 BUN_VER="$(bun --version 2>&1 | head -1)"
@@ -57,18 +62,25 @@ mkdir -p "$OUT_DIR" "$METRICS_DIR"
 exec > >(tee "$OUT_TXT")
 exec 2>&1
 
-echo "=== goqjs fib bench ${STAMP} ==="
+echo "=== goqjs SSR bench ${STAMP} ==="
 echo "host=${HOST} port=${PORT} goqjs_c=${GOQJS_C} nproc=${NPROC} deno_parallel=${DENO_PARALLEL}"
 echo "oha=${OHA_VER}"
 echo "bun=${BUN_VER}"
 echo "deno=${DENO_LINE}"
 echo "deno.version=${DENO_VER_NUM}"
+echo "latency: n=${LATENCY_N} delay=${LATENCY_DELAY}"
+echo "concurrency: n=${CONCUR_N} delay=${CONCUR_DELAY}"
+echo "render-heavy: n=${RENDER_N} delay=${RENDER_DELAY}"
 echo
 
-BIN="${ROOT}/bench/.bin/goqjs-serve"
+echo "npm install + build (goqjs IIFE)…"
+(cd "$SSR" && npm install --silent && npm run build)
+echo
+
+BIN="${ROOT}/bench/.bin/bench-ssr"
 mkdir -p "${ROOT}/bench/.bin"
-echo "building goqjs-serve → ${BIN}"
-(cd "$ROOT" && go build -o "$BIN" ./cmd/goqjs-serve)
+echo "building bench-ssr → ${BIN}"
+(cd "$ROOT" && go build -o "$BIN" ./bench/ssr)
 echo
 
 SERVER_PID=""
@@ -76,16 +88,34 @@ SERVER_PID=""
 cleanup() {
   if [[ -n "${SERVER_PID}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill "$SERVER_PID" 2>/dev/null || true
+    # Deno (and others) can ignore/delay SIGTERM; never block the bench forever.
+    local i
+    for i in $(seq 1 30); do
+      if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+    done
+    if kill -0 "$SERVER_PID" 2>/dev/null; then
+      echo ">>> cleanup: ${SERVER_PID} still alive after TERM, sending KILL" >&2
+      kill -9 "$SERVER_PID" 2>/dev/null || true
+    fi
     wait "$SERVER_PID" 2>/dev/null || true
   fi
   SERVER_PID=""
 }
 trap cleanup EXIT
 
+qs() {
+  local n=$1 delay=$2
+  echo "n=${n}&delay=${delay}"
+}
+
 wait_ready() {
   local i
-  for i in $(seq 1 50); do
-    if curl -fsS "${BASE}?n=1" >/dev/null 2>&1; then
+  local url="${BASE}?$(qs 5 0)"
+  for i in $(seq 1 80); do
+    if curl -fsS "$url" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.1
@@ -102,10 +132,9 @@ start_bg() {
   env PORT="$PORT" "$@" &
   SERVER_PID=$!
   wait_ready
-  curl -fsS "${BASE}?n=5" >/dev/null
+  curl -fsS "${BASE}?$(qs 20 0)" >/dev/null
 }
 
-# One oha run: JSON for tables + short text summary in the log.
 run_oha() {
   local runtime=$1
   local scenario=$2
@@ -146,16 +175,16 @@ bench_target() {
   start_bg "$name" "$@"
 
   run_oha "$name" latency \
-    "${name} / latency  n=${LATENCY_N} c=1 nreq=200" \
-    "${BASE}?n=${LATENCY_N}" -n 200 -c 1
+    "${name} / latency  n=${LATENCY_N} delay=${LATENCY_DELAY} c=1 nreq=100" \
+    "${BASE}?$(qs "$LATENCY_N" "$LATENCY_DELAY")" -n 100 -c 1
 
   run_oha "$name" concurrency \
-    "${name} / concurrency  n=${CONCUR_N} c=50 z=5s" \
-    "${BASE}?n=${CONCUR_N}" -z 5s -c 50
+    "${name} / concurrency  n=${CONCUR_N} delay=${CONCUR_DELAY} c=50 z=5s" \
+    "${BASE}?$(qs "$CONCUR_N" "$CONCUR_DELAY")" -z 5s -c 50
 
-  run_oha "$name" cpu-parallel \
-    "${name} / cpu-parallel  n=${CPU_N} c=8 nreq=40" \
-    "${BASE}?n=${CPU_N}" -n 40 -c 8
+  run_oha "$name" render-heavy \
+    "${name} / render-heavy  n=${RENDER_N} delay=${RENDER_DELAY} c=8 nreq=40" \
+    "${BASE}?$(qs "$RENDER_N" "$RENDER_DELAY")" -n 40 -c 8
 
   cleanup
   echo
@@ -163,21 +192,21 @@ bench_target() {
   echo
 }
 
-bench_target "bun" bun "${ROOT}/bench/server_bun.js"
+bench_target "bun" bun "${SSR}/server_bun.js"
 
-DENO_ARGS=(serve --host "$HOST" --port "$PORT")
+DENO_ARGS=(serve --allow-read --host "$HOST" --port "$PORT")
 if [[ "${DENO_PARALLEL}" == "1" ]]; then
-  DENO_ARGS=(serve --parallel --host "$HOST" --port "$PORT")
+  DENO_ARGS=(serve --parallel --allow-read --host "$HOST" --port "$PORT")
 fi
-bench_target "deno" deno "${DENO_ARGS[@]}" "${ROOT}/bench/server_deno.js"
+bench_target "deno" deno "${DENO_ARGS[@]}" "${SSR}/server_deno.js"
 
-bench_target "goqjs-c1" "$BIN" -c 1 -addr "${HOST}:${PORT}" -f "${ROOT}/examples/serve-fib.js"
-bench_target "goqjs-c${GOQJS_C}" "$BIN" -c "$GOQJS_C" -addr "${HOST}:${PORT}" -f "${ROOT}/examples/serve-fib.js"
+bench_target "goqjs-c1" "$BIN" -c 1 -addr "${HOST}:${PORT}" -ssr "${SSR}/dist/server/ssr.js"
+bench_target "goqjs-c${GOQJS_C}" "$BIN" -c "$GOQJS_C" -addr "${HOST}:${PORT}" -ssr "${SSR}/dist/server/ssr.js"
 
 python3 "${ROOT}/bench/report.py" \
   --metrics-dir "$METRICS_DIR" \
   --out "$OUT_MD" \
-  --title "Fib HTTP bench ${STAMP}" \
+  --title "SSR HTTP bench ${STAMP}" \
   --meta "host=${HOST}" \
   --meta "port=${PORT}" \
   --meta "goqjs_c=${GOQJS_C}" \
@@ -188,9 +217,13 @@ python3 "${ROOT}/bench/report.py" \
   --meta "deno=${DENO_LINE}" \
   --meta "deno.version=${DENO_VER_NUM}" \
   --meta "latency_n=${LATENCY_N}" \
+  --meta "latency_delay=${LATENCY_DELAY}" \
   --meta "concur_n=${CONCUR_N}" \
-  --meta "cpu_n=${CPU_N}"
+  --meta "concur_delay=${CONCUR_DELAY}" \
+  --meta "render_n=${RENDER_N}" \
+  --meta "render_delay=${RENDER_DELAY}"
 
 echo "=== done ==="
 echo "  log: ${OUT_TXT}"
 echo "  md:  ${OUT_MD}"
+echo "  curated write-up (after review): bench/BENCH-ssr.md"

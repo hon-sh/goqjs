@@ -1,5 +1,5 @@
 // Shared fib helpers for Bun/Deno bench servers.
-// Keep algorithm in sync with examples/serve-fib.js.
+// Keep algorithm in sync with serve-fib.js (and examples/serve-fib.js).
 
 export function fib(x) {
   if (x < 2) return x;
