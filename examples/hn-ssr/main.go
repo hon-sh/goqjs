@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,10 +34,16 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	workers := flag.Int("c", 2, "goqjs runtime pool size")
 	enableCache := flag.Bool("cache", false, "cache HN Firebase GET responses (FIFO, max 100 URLs)")
+	clientJS := flag.String("client-js", "on", "include client JS for hydrate: on|off")
 	flag.Parse()
 
 	if *workers < 1 {
 		fmt.Fprintf(os.Stderr, "hn-ssr: -c must be >= 1\n")
+		os.Exit(2)
+	}
+	clientJSOn, err := parseOnOff("client-js", *clientJS)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hn-ssr: %v\n", err)
 		os.Exit(2)
 	}
 
@@ -49,6 +56,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hn-ssr: missing dist/client/index.html (run: npm run build)\n%v\n", err)
 		os.Exit(1)
+	}
+	tpl := string(template)
+	if !clientJSOn {
+		tpl = stripClientScripts(tpl)
 	}
 
 	clientFS, err := fs.Sub(distFS, "dist/client")
@@ -163,14 +174,18 @@ func main() {
 		}
 
 		tAsm := time.Now()
-		page := string(template)
+		page := tpl
 		page = strings.Replace(page, "<!--app-html-->", out.HTML, 1)
-		page = strings.Replace(
-			page,
-			"<!--app-data-->",
-			`<script>window.__INITIAL_DATA__=`+serializeJSON(out.Data)+`</script>`,
-			1,
-		)
+		if clientJSOn {
+			page = strings.Replace(
+				page,
+				"<!--app-data-->",
+				`<script>window.__INITIAL_DATA__=`+serializeJSON(out.Data)+`</script>`,
+				1,
+			)
+		} else {
+			page = strings.Replace(page, "<!--app-data-->", "", 1)
+		}
 		asmMs := time.Since(tAsm).Milliseconds()
 
 		tWrite := time.Now()
@@ -208,11 +223,33 @@ func main() {
 	if *enableCache {
 		cacheNote = "on (HN GET FIFO max 100)"
 	}
-	fmt.Fprintf(os.Stderr, "hn-ssr: listening on %s (pool=%d cache=%s)\n", *addr, *workers, cacheNote)
+	jsNote := "on"
+	if !clientJSOn {
+		jsNote = "off"
+	}
+	fmt.Fprintf(os.Stderr, "hn-ssr: listening on %s (pool=%d cache=%s client-js=%s)\n",
+		*addr, *workers, cacheNote, jsNote)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "hn-ssr: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func parseOnOff(name, v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "on", "1", "true":
+		return true, nil
+	case "off", "0", "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("-%s must be on or off (got %q)", name, v)
+	}
+}
+
+var clientScriptRE = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>\s*`)
+
+func stripClientScripts(html string) string {
+	return clientScriptRE.ReplaceAllString(html, "")
 }
 
 func serializeJSON(raw json.RawMessage) string {

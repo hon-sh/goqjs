@@ -28,7 +28,8 @@ npm run build && npm start   # Node host + dist/
 ```bash
 make prod            # ensures node_modules + dist, then native binary
 ./hn-ssr -addr :8080 -c 2
-./hn-ssr -addr :8080 -c 2 -cache   # FIFO cache HN Firebase GETs (max 100 URLs)
+./hn-ssr -addr :8080 -c 2 -cache              # FIFO cache HN Firebase GETs (max 100 URLs)
+./hn-ssr -addr :8080 -client-js=off            # SSR HTML only (no hydrate bundle)
 
 # Cross-compile (needs Zig on PATH):
 make prod-linux-x64              # first time / reuse existing dist
