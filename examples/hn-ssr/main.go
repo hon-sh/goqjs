@@ -2,11 +2,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -25,10 +27,12 @@ import (
 //go:embed all:dist
 var distFS embed.FS
 
+const hnAPIPrefix = "https://hacker-news.firebaseio.com/v0"
+
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	workers := flag.Int("c", 2, "goqjs runtime pool size")
-	enableCache := flag.Bool("cache", false, "cache loadData JSON by URL (FIFO, max 100)")
+	enableCache := flag.Bool("cache", false, "cache HN Firebase GET responses (FIFO, max 100 URLs)")
 	flag.Parse()
 
 	if *workers < 1 {
@@ -53,40 +57,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	fetchClient := &http.Client{Timeout: 30 * time.Second}
+	var hnCache *hnFetchCache
+	if *enableCache {
+		hnCache = newHNFetchCache(100)
+		fetchClient.Transport = &hnCacheTransport{
+			base:  http.DefaultTransport,
+			cache: hnCache,
+		}
+	}
+
 	results := &resultStore{}
-	cache := newLoadCache(100)
 	run := `async function(reqId, url) {
-  if (typeof globalThis.__hn_load !== "function" || typeof globalThis.__hn_render_data !== "function") {
-    throw new Error("__hn_load / __hn_render_data missing; rebuild dist (make pdist prod)");
+  if (typeof globalThis.__hn_render !== "function") {
+    throw new Error("__hn_render missing; rebuild dist (make pdist prod)");
   }
   try {
-    url = String(url);
-    var data;
-    var load_ms = 0;
-    var cache_hit = false;
-    var cached = __goqjs_host("cacheGet", url);
-    if (cached) {
-      data = JSON.parse(cached);
-      cache_hit = true;
-    } else {
-      var t0 = Date.now();
-      data = await globalThis.__hn_load(url);
-      load_ms = Date.now() - t0;
-      __goqjs_host("cachePut", JSON.stringify({ url: url, data: data }));
-    }
-    var t1 = Date.now();
-    var html = globalThis.__hn_render_data(data);
-    var render_ms = Date.now() - t1;
-    if (!html || typeof html !== "string") {
-      throw new Error("bad render result: " + typeof html);
+    var out = await globalThis.__hn_render(String(url));
+    if (!out || typeof out.html !== "string") {
+      throw new Error("bad render result: " + typeof out);
     }
     __goqjs_host("ssrResult", JSON.stringify({
       id: reqId,
-      html: html,
-      data: data,
-      load_ms: load_ms|0,
-      render_ms: render_ms|0,
-      cache_hit: cache_hit
+      html: out.html,
+      data: out.data,
+      load_ms: out.load_ms|0,
+      render_ms: out.render_ms|0
     }));
   } catch (e) {
     var msg = "ssr failed";
@@ -98,17 +94,14 @@ func main() {
 }`
 
 	setup := func(r *runtime.Runtime) error {
-		if err := stdlib.Install(r, stdlib.Options{Console: true, Fetch: true}); err != nil {
+		if err := stdlib.Install(r, stdlib.Options{
+			Console: true,
+			Fetch:   true,
+			Client:  fetchClient,
+		}); err != nil {
 			return err
 		}
 		r.InjectHost("ssrResult", results.host)
-		if *enableCache {
-			r.InjectHost("cacheGet", cache.Get)
-			r.InjectHost("cachePut", cache.Put)
-		} else {
-			r.InjectHost("cacheGet", func(string) (string, error) { return "", nil })
-			r.InjectHost("cachePut", func(string) (string, error) { return "", nil })
-		}
 		if err := r.Eval(qjsPolyfills); err != nil {
 			return fmt.Errorf("eval polyfills: %w", err)
 		}
@@ -138,7 +131,6 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		// Let FileServer-style paths fall through only for assets (handled above).
 		if strings.HasPrefix(req.URL.Path, "/assets/") {
 			http.NotFound(w, req)
 			return
@@ -147,6 +139,11 @@ func main() {
 		start := time.Now()
 		id := results.nextID()
 		url := req.URL.RequestURI()
+
+		var hits0, misses0 int64
+		if hnCache != nil {
+			hits0, misses0 = hnCache.stats()
+		}
 
 		tRun := time.Now()
 		err := p.Run(id, url)
@@ -182,15 +179,17 @@ func main() {
 		_, _ = w.Write([]byte(page))
 		writeMs := time.Since(tWrite).Milliseconds()
 
-		cacheTag := "miss"
-		if out.CacheHit {
-			cacheTag = "hit"
+		cachePart := ""
+		if hnCache != nil {
+			hits1, misses1 := hnCache.stats()
+			cachePart = fmt.Sprintf(" fetch_cache=%d/%d",
+				hits1-hits0, (hits1-hits0)+(misses1-misses0))
 		}
 		fmt.Fprintf(os.Stderr,
-			"hn-ssr: %s %s total=%dms run=%dms (load=%dms cache=%s render=%dms) assemble=%dms write=%dms\n",
+			"hn-ssr: %s %s total=%dms run=%dms (load=%dms render=%dms%s) assemble=%dms write=%dms\n",
 			req.Method, url,
 			time.Since(start).Milliseconds(),
-			runMs, out.LoadMs, cacheTag, out.RenderMs,
+			runMs, out.LoadMs, out.RenderMs, cachePart,
 			asmMs, writeMs,
 		)
 	})
@@ -207,7 +206,7 @@ func main() {
 
 	cacheNote := "off"
 	if *enableCache {
-		cacheNote = "on (FIFO max 100)"
+		cacheNote = "on (HN GET FIFO max 100)"
 	}
 	fmt.Fprintf(os.Stderr, "hn-ssr: listening on %s (pool=%d cache=%s)\n", *addr, *workers, cacheNote)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -338,7 +337,6 @@ type ssrOut struct {
 	Data     json.RawMessage
 	LoadMs   int64
 	RenderMs int64
-	CacheHit bool
 }
 
 type resultStore struct {
@@ -358,7 +356,6 @@ func (s *resultStore) host(payload string) (string, error) {
 		Data     json.RawMessage `json:"data"`
 		LoadMs   int64           `json:"load_ms"`
 		RenderMs int64           `json:"render_ms"`
-		CacheHit bool            `json:"cache_hit"`
 	}
 	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
 		return "", err
@@ -372,7 +369,6 @@ func (s *resultStore) host(payload string) (string, error) {
 		Data:     msg.Data,
 		LoadMs:   msg.LoadMs,
 		RenderMs: msg.RenderMs,
-		CacheHit: msg.CacheHit,
 	}
 	s.mu.Unlock()
 	return "", nil
@@ -388,57 +384,106 @@ func (s *resultStore) take(id int64) (ssrOut, bool) {
 	return out, ok
 }
 
-// loadCache is a tiny FIFO map of URL → loadData JSON (demo; no TTL).
-type loadCache struct {
-	mu    sync.Mutex
-	max   int
-	items map[string]json.RawMessage
-	order []string
+type hnCacheEntry struct {
+	status int
+	body   []byte
 }
 
-func newLoadCache(max int) *loadCache {
+// hnFetchCache is a FIFO map of full request URL → response body (demo; no TTL).
+type hnFetchCache struct {
+	mu     sync.Mutex
+	max    int
+	items  map[string]hnCacheEntry
+	order  []string
+	hits   atomic.Int64
+	misses atomic.Int64
+}
+
+func newHNFetchCache(max int) *hnFetchCache {
 	if max < 1 {
 		max = 100
 	}
-	return &loadCache{
+	return &hnFetchCache{
 		max:   max,
-		items: make(map[string]json.RawMessage),
+		items: make(map[string]hnCacheEntry),
 	}
 }
 
-func (c *loadCache) Get(url string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	v, ok := c.items[url]
-	if !ok {
-		return "", nil
-	}
-	return string(v), nil
+func (c *hnFetchCache) stats() (hits, misses int64) {
+	return c.hits.Load(), c.misses.Load()
 }
 
-func (c *loadCache) Put(payload string) (string, error) {
-	var msg struct {
-		URL  string          `json:"url"`
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
-		return "", err
-	}
-	if msg.URL == "" || len(msg.Data) == 0 {
-		return "", nil
-	}
+func (c *hnFetchCache) get(url string) (hnCacheEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.items[msg.URL]; ok {
-		c.items[msg.URL] = msg.Data
-		return "", nil
+	e, ok := c.items[url]
+	return e, ok
+}
+
+func (c *hnFetchCache) put(url string, e hnCacheEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.items[url]; ok {
+		c.items[url] = e
+		return
 	}
 	for len(c.order) >= c.max {
 		old := c.order[0]
 		c.order = c.order[1:]
 		delete(c.items, old)
 	}
-	c.items[msg.URL] = msg.Data
-	c.order = append(c.order, msg.URL)
-	return "", nil
+	c.items[url] = e
+	c.order = append(c.order, url)
+}
+
+// hnCacheTransport caches GET responses under hnAPIPrefix.
+type hnCacheTransport struct {
+	base  http.RoundTripper
+	cache *hnFetchCache
+}
+
+func (t *hnCacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	url := req.URL.String()
+	cacheable := req.Method == http.MethodGet && strings.HasPrefix(url, hnAPIPrefix)
+
+	if cacheable {
+		if e, ok := t.cache.get(url); ok {
+			t.cache.hits.Add(1)
+			return cachedResponse(req, e), nil
+		}
+		t.cache.misses.Add(1)
+	}
+
+	resp, err := base.RoundTrip(req)
+	if err != nil || !cacheable || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp, err
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	t.cache.put(url, hnCacheEntry{status: resp.StatusCode, body: body})
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	return resp, nil
+}
+
+func cachedResponse(req *http.Request, e hnCacheEntry) *http.Response {
+	return &http.Response{
+		Status:        fmt.Sprintf("%d %s", e.status, http.StatusText(e.status)),
+		StatusCode:    e.status,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(bytes.NewReader(e.body)),
+		ContentLength: int64(len(e.body)),
+		Request:       req,
+	}
 }
