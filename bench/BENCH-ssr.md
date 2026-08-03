@@ -1,45 +1,20 @@
 # goqjs SSR HTTP bench notes
 
-Curated write-up for the React SSR bench (`bench/ssr/`).  
-Workload: `sleep(delay)` → deterministic `Array(n)` → `renderToString` long list (per-item conditionals).  
-Same Vite IIFE for Bun / Deno / goqjs.
+Controlled React SSR: `sleep` + fixed `Array(n)` + `renderToString` (Bun / Deno / goqjs, same IIFE).
 
 How to reproduce: see [`ssr/README.md`](./ssr/README.md) (`make -C bench ssr`).
 
-Raw oha outputs land in `results/ssr-<stamp>.*` (gitignored). After a meaningful run, paste tables + analysis here (same shape as [`BENCH-fib.md`](./BENCH-fib.md)).
+## Curated snapshots
 
----
+| file | list size focus | source run |
+|------|-----------------|------------|
+| [`bench-ssr-N1500.md`](./bench-ssr-N1500.md) | render-heavy **n=1500** | `results/ssr-20260803-104703` |
+| [`bench-ssr-N100.md`](./bench-ssr-N100.md) | all scenarios **n=100** | `results/ssr-20260803-105302` |
 
-## Environment
+```bash
+# N=1500 render-heavy (default RENDER_N)
+make -C bench ssr
 
-| key | value |
-|-----|-------|
-| _(pending first curated run)_ | |
-
----
-
-## Results
-
-### Latency (low concurrency)
-
-| runtime | RPS | avg ms | p50 ms | p95 ms | p99 ms |
-|---------|-----|--------|--------|--------|--------|
-| | | | | | |
-
-### Concurrency / throughput
-
-| runtime | RPS | avg ms | p50 ms | p95 ms | p99 ms |
-|---------|-----|--------|--------|--------|--------|
-| | | | | | |
-
-### Render-heavy (long list, little/no sleep)
-
-| runtime | RPS | avg ms | p50 ms | p95 ms | p99 ms |
-|---------|-----|--------|--------|--------|--------|
-| | | | | | |
-
----
-
-## Analysis
-
-_(Fill after first run.)_
+# N=100 across latency / concurrency / render-heavy
+LATENCY_N=100 CONCUR_N=100 RENDER_N=100 make -C bench ssr
+```

@@ -3,7 +3,7 @@
 | bench | workload | how to run | curated notes |
 |-------|----------|------------|---------------|
 | **[fib](./fib/)** | recursive `fib(n)` — JS engine / CPU | `make -C bench fib` | [`BENCH-fib.md`](./BENCH-fib.md) |
-| **[ssr](./ssr/)** | sleep + fixed Array + React long-list SSR | `make -C bench ssr` | [`BENCH-ssr.md`](./BENCH-ssr.md) |
+| **[ssr](./ssr/)** | sleep + fixed Array + React long-list SSR | `make -C bench ssr` | [`BENCH-ssr.md`](./BENCH-ssr.md) · [`N100`](./bench-ssr-N100.md) · [`N1500`](./bench-ssr-N1500.md) |
 
 ```bash
 make -C bench          # default: fib
@@ -27,4 +27,4 @@ python3 bench/report.py --metrics-dir bench/results/fib-<stamp>.metrics \
   --out bench/results/fib-<stamp>.md
 ```
 
-After a meaningful run, promote numbers + analysis into `BENCH-fib.md` or `BENCH-ssr.md`.
+After a meaningful run, promote numbers + analysis into `BENCH-fib.md`, or SSR snapshots like `bench-ssr-N100.md` / `bench-ssr-N1500.md`.
