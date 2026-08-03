@@ -136,7 +136,7 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-	mux.Handle("/assets/", http.FileServer(http.FS(clientFS)))
+	mux.Handle("/assets/", withHashedAssetCache(http.FileServer(http.FS(clientFS))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -190,6 +190,7 @@ func main() {
 
 		tWrite := time.Now()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", pageCacheControl(req.URL.Path))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(page))
 		writeMs := time.Since(tWrite).Milliseconds()
@@ -250,6 +251,25 @@ var clientScriptRE = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>\s*`)
 
 func stripClientScripts(html string) string {
 	return clientScriptRE.ReplaceAllString(html, "")
+}
+
+func withHashedAssetCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasSuffix(path, ".css") || strings.HasSuffix(path, ".js") {
+			// Vite content-hashed filenames under /assets/.
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func pageCacheControl(path string) string {
+	if strings.HasPrefix(path, "/item/") {
+		return "public, max-age=180"
+	}
+	// home and other HTML pages
+	return "public, max-age=60"
 }
 
 func serializeJSON(raw json.RawMessage) string {

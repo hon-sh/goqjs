@@ -46,6 +46,9 @@ removes `dist`, `node_modules`, and binaries.
 `loadData` (stdlib `fetch`) → `renderToString` in QuickJS → HTML with
 `__INITIAL_DATA__` → browser hydrate via client bundle.
 
+HTTP `Cache-Control` (set in the Go mux): hashed `/assets/*.{js,css}` → 1 day;
+`/` → 1 min; `/item/:id` → 3 min.
+
 ## Layout
 
 ```text
