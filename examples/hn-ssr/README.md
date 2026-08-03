@@ -28,6 +28,7 @@ npm run build && npm start   # Node host + dist/
 ```bash
 make prod            # ensures node_modules + dist, then native binary
 ./hn-ssr -addr :8080 -c 2
+./hn-ssr -addr :8080 -c 2 -cache   # FIFO loadData cache by URL (max 100)
 
 # Cross-compile (needs Zig on PATH):
 make prod-linux-x64              # first time / reuse existing dist

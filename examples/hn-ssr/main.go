@@ -28,6 +28,7 @@ var distFS embed.FS
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	workers := flag.Int("c", 2, "goqjs runtime pool size")
+	enableCache := flag.Bool("cache", false, "cache loadData JSON by URL (FIFO, max 100)")
 	flag.Parse()
 
 	if *workers < 1 {
@@ -53,19 +54,39 @@ func main() {
 	}
 
 	results := &resultStore{}
+	cache := newLoadCache(100)
 	run := `async function(reqId, url) {
-  if (typeof globalThis.__hn_render !== "function") {
-    throw new Error("__hn_render missing; ssr.js not loaded");
+  if (typeof globalThis.__hn_load !== "function" || typeof globalThis.__hn_render_data !== "function") {
+    throw new Error("__hn_load / __hn_render_data missing; rebuild dist (make pdist prod)");
   }
   try {
-    var out = await globalThis.__hn_render(String(url));
-    if (!out || typeof out.html !== "string") {
-      throw new Error("bad render result: " + typeof out);
+    url = String(url);
+    var data;
+    var load_ms = 0;
+    var cache_hit = false;
+    var cached = __goqjs_host("cacheGet", url);
+    if (cached) {
+      data = JSON.parse(cached);
+      cache_hit = true;
+    } else {
+      var t0 = Date.now();
+      data = await globalThis.__hn_load(url);
+      load_ms = Date.now() - t0;
+      __goqjs_host("cachePut", JSON.stringify({ url: url, data: data }));
+    }
+    var t1 = Date.now();
+    var html = globalThis.__hn_render_data(data);
+    var render_ms = Date.now() - t1;
+    if (!html || typeof html !== "string") {
+      throw new Error("bad render result: " + typeof html);
     }
     __goqjs_host("ssrResult", JSON.stringify({
       id: reqId,
-      html: out.html,
-      data: out.data
+      html: html,
+      data: data,
+      load_ms: load_ms|0,
+      render_ms: render_ms|0,
+      cache_hit: cache_hit
     }));
   } catch (e) {
     var msg = "ssr failed";
@@ -81,6 +102,13 @@ func main() {
 			return err
 		}
 		r.InjectHost("ssrResult", results.host)
+		if *enableCache {
+			r.InjectHost("cacheGet", cache.Get)
+			r.InjectHost("cachePut", cache.Put)
+		} else {
+			r.InjectHost("cacheGet", func(string) (string, error) { return "", nil })
+			r.InjectHost("cachePut", func(string) (string, error) { return "", nil })
+		}
 		if err := r.Eval(qjsPolyfills); err != nil {
 			return fmt.Errorf("eval polyfills: %w", err)
 		}
@@ -116,19 +144,28 @@ func main() {
 			return
 		}
 
+		start := time.Now()
 		id := results.nextID()
 		url := req.URL.RequestURI()
-		if err := p.Run(id, url); err != nil {
+
+		tRun := time.Now()
+		err := p.Run(id, url)
+		runMs := time.Since(tRun).Milliseconds()
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			fmt.Fprintf(os.Stderr, "hn-ssr: render %s: %v\n", url, err)
+			fmt.Fprintf(os.Stderr, "hn-ssr: %s %s total=%dms run=%dms err=%v\n",
+				req.Method, url, time.Since(start).Milliseconds(), runMs, err)
 			return
 		}
 		out, ok := results.take(id)
 		if !ok {
 			http.Error(w, "ssr produced no result", http.StatusInternalServerError)
+			fmt.Fprintf(os.Stderr, "hn-ssr: %s %s total=%dms run=%dms err=no result\n",
+				req.Method, url, time.Since(start).Milliseconds(), runMs)
 			return
 		}
 
+		tAsm := time.Now()
 		page := string(template)
 		page = strings.Replace(page, "<!--app-html-->", out.HTML, 1)
 		page = strings.Replace(
@@ -137,10 +174,25 @@ func main() {
 			`<script>window.__INITIAL_DATA__=`+serializeJSON(out.Data)+`</script>`,
 			1,
 		)
+		asmMs := time.Since(tAsm).Milliseconds()
 
+		tWrite := time.Now()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(page))
+		writeMs := time.Since(tWrite).Milliseconds()
+
+		cacheTag := "miss"
+		if out.CacheHit {
+			cacheTag = "hit"
+		}
+		fmt.Fprintf(os.Stderr,
+			"hn-ssr: %s %s total=%dms run=%dms (load=%dms cache=%s render=%dms) assemble=%dms write=%dms\n",
+			req.Method, url,
+			time.Since(start).Milliseconds(),
+			runMs, out.LoadMs, cacheTag, out.RenderMs,
+			asmMs, writeMs,
+		)
 	})
 
 	srv := &http.Server{
@@ -153,7 +205,11 @@ func main() {
 		_ = srv.Shutdown(context.Background())
 	}()
 
-	fmt.Fprintf(os.Stderr, "hn-ssr: listening on %s (pool=%d)\n", *addr, *workers)
+	cacheNote := "off"
+	if *enableCache {
+		cacheNote = "on (FIFO max 100)"
+	}
+	fmt.Fprintf(os.Stderr, "hn-ssr: listening on %s (pool=%d cache=%s)\n", *addr, *workers, cacheNote)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "hn-ssr: %v\n", err)
 		os.Exit(1)
@@ -278,8 +334,11 @@ if (typeof URL === "undefined") {
 `
 
 type ssrOut struct {
-	HTML string
-	Data json.RawMessage
+	HTML     string
+	Data     json.RawMessage
+	LoadMs   int64
+	RenderMs int64
+	CacheHit bool
 }
 
 type resultStore struct {
@@ -294,9 +353,12 @@ func (s *resultStore) nextID() int64 {
 
 func (s *resultStore) host(payload string) (string, error) {
 	var msg struct {
-		ID   int64           `json:"id"`
-		HTML string          `json:"html"`
-		Data json.RawMessage `json:"data"`
+		ID       int64           `json:"id"`
+		HTML     string          `json:"html"`
+		Data     json.RawMessage `json:"data"`
+		LoadMs   int64           `json:"load_ms"`
+		RenderMs int64           `json:"render_ms"`
+		CacheHit bool            `json:"cache_hit"`
 	}
 	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
 		return "", err
@@ -305,7 +367,13 @@ func (s *resultStore) host(payload string) (string, error) {
 	if s.m == nil {
 		s.m = make(map[int64]ssrOut)
 	}
-	s.m[msg.ID] = ssrOut{HTML: msg.HTML, Data: msg.Data}
+	s.m[msg.ID] = ssrOut{
+		HTML:     msg.HTML,
+		Data:     msg.Data,
+		LoadMs:   msg.LoadMs,
+		RenderMs: msg.RenderMs,
+		CacheHit: msg.CacheHit,
+	}
 	s.mu.Unlock()
 	return "", nil
 }
@@ -318,4 +386,59 @@ func (s *resultStore) take(id int64) (ssrOut, bool) {
 		delete(s.m, id)
 	}
 	return out, ok
+}
+
+// loadCache is a tiny FIFO map of URL → loadData JSON (demo; no TTL).
+type loadCache struct {
+	mu    sync.Mutex
+	max   int
+	items map[string]json.RawMessage
+	order []string
+}
+
+func newLoadCache(max int) *loadCache {
+	if max < 1 {
+		max = 100
+	}
+	return &loadCache{
+		max:   max,
+		items: make(map[string]json.RawMessage),
+	}
+}
+
+func (c *loadCache) Get(url string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.items[url]
+	if !ok {
+		return "", nil
+	}
+	return string(v), nil
+}
+
+func (c *loadCache) Put(payload string) (string, error) {
+	var msg struct {
+		URL  string          `json:"url"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
+		return "", err
+	}
+	if msg.URL == "" || len(msg.Data) == 0 {
+		return "", nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.items[msg.URL]; ok {
+		c.items[msg.URL] = msg.Data
+		return "", nil
+	}
+	for len(c.order) >= c.max {
+		old := c.order[0]
+		c.order = c.order[1:]
+		delete(c.items, old)
+	}
+	c.items[msg.URL] = msg.Data
+	c.order = append(c.order, msg.URL)
+	return "", nil
 }

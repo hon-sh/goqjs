@@ -34,10 +34,29 @@ if (typeof process === 'undefined') {
   globalThis.process = { env: { NODE_ENV: 'production' } }
 }
 
-async function render(url) {
-  const data = await loadData(url)
-  const html = ReactDOMServer.renderToString(<App data={data} />)
-  return { html, data }
+async function load(url) {
+  return loadData(url)
 }
 
+function renderData(data) {
+  return ReactDOMServer.renderToString(<App data={data} />)
+}
+
+/** Full path (no Go cache). Kept for convenience. */
+async function render(url) {
+  const t0 = Date.now()
+  const data = await load(url)
+  const t1 = Date.now()
+  const html = renderData(data)
+  const t2 = Date.now()
+  return {
+    html,
+    data,
+    load_ms: t1 - t0,
+    render_ms: t2 - t1,
+  }
+}
+
+globalThis.__hn_load = load
+globalThis.__hn_render_data = renderData
 globalThis.__hn_render = render
