@@ -26,11 +26,19 @@ npm run build && npm start   # Node host + dist/
 ## Prod (Go + goqjs, embedded dist)
 
 ```bash
-make prod            # npm run build + go build -trimpath -ldflags "-s -w"
+make prod            # ensures node_modules + dist, then native binary
 ./hn-ssr -addr :8080 -c 2
+
+# Cross-compile (needs Zig on PATH):
+make prod-linux-x64              # first time / reuse existing dist
+make pdist prod-linux-x64        # force rebuild dist, then binary
 ```
 
-From the repo root: `make hn-ssr` (same as `make -C examples/hn-ssr prod`).
+From the repo root: `make hn-ssr` (native `prod` only).
+
+`dist` is a Make directory target (depends on `node_modules`). Changing JS
+sources does **not** invalidate it — use `make pdist` first. `make clean`
+removes `dist`, `node_modules`, and binaries.
 
 `main.go` embeds `dist/` (`client` assets + `server/ssr.js`). Each request:
 `loadData` (stdlib `fetch`) → `renderToString` in QuickJS → HTML with
@@ -47,7 +55,7 @@ src/entry-client.jsx   hydrateRoot
 src/App.jsx            home / item (plain <a> navigation)
 server.js              Vite middleware (dev) / Node SSR (prod)
 main.go                embed dist/ + goqjs pool host
-Makefile               prod → dist/ + hn-ssr binary
+Makefile               prod / prod-linux-x64 / pdist / clean
 vite.goqjs.config.js   bundles React into dist/server/ssr.js
 ```
 
