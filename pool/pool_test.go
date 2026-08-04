@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"goqjs/pool"
-	"goqjs/runtime"
+	"github.com/hon-go/hon/pool"
+	"github.com/hon-go/hon/runtime"
 )
 
 func TestRoundRobin(t *testing.T) {
@@ -25,7 +25,7 @@ func TestRoundRobin(t *testing.T) {
 			return "", nil
 		})
 		return r.Eval(`globalThis.console = { log: function() {
-  __goqjs_host("consoleLog", "[]");
+  __hon_host("consoleLog", "[]");
 }};`)
 	})
 	if err != nil {

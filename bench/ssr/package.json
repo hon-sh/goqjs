@@ -1,5 +1,5 @@
 {
-  "name": "goqjs-bench-ssr",
+  "name": "hon-bench-ssr",
   "private": true,
   "type": "module",
   "scripts": {

@@ -1,6 +1,6 @@
-# goqjs SSR HTTP bench notes
+# hon SSR HTTP bench notes
 
-Controlled React SSR: `sleep` + fixed `Array(n)` + `renderToString` (Bun / Deno / goqjs, same IIFE).
+Controlled React SSR: `sleep` + fixed `Array(n)` + `renderToString` (Bun / Deno / hon, same IIFE).
 
 How to reproduce: see [`ssr/README.md`](./ssr/README.md) (`make -C bench ssr`).
 

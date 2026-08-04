@@ -1,4 +1,4 @@
-// SSR bench host: sleep + fixed Array + React renderToString via goqjs.
+// SSR bench host: sleep + fixed Array + React renderToString via hon.
 package main
 
 import (
@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"goqjs/pool"
-	"goqjs/runtime"
-	"goqjs/stdlib"
+	"github.com/hon-go/hon/pool"
+	"github.com/hon-go/hon/runtime"
+	"github.com/hon-go/hon/stdlib"
 )
 
 //go:embed handler.js
@@ -118,7 +118,7 @@ func main() {
 		_ = srv.Shutdown(context.Background())
 	}()
 
-	fmt.Fprintf(os.Stderr, "bench-ssr goqjs: listening on %s (pool=%d ssr=%s)\n", *addr, *workers, jsPath)
+	fmt.Fprintf(os.Stderr, "bench-ssr hon: listening on %s (pool=%d ssr=%s)\n", *addr, *workers, jsPath)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "bench-ssr: %v\n", err)
 		os.Exit(1)
@@ -175,7 +175,7 @@ func wrapHTTPRun(userRun string) string {
   var res = {
     statusCode: 200,
     write: async function(chunk) {
-      __goqjs_host("httpWrite", JSON.stringify({
+      __hon_host("httpWrite", JSON.stringify({
         id: reqId,
         status: this.statusCode|0,
         body: chunk === undefined || chunk === null ? "" : String(chunk),
@@ -183,7 +183,7 @@ func wrapHTTPRun(userRun string) string {
       }));
     },
     end: async function(chunk) {
-      __goqjs_host("httpWrite", JSON.stringify({
+      __hon_host("httpWrite", JSON.stringify({
         id: reqId,
         status: this.statusCode|0,
         body: chunk === undefined || chunk === null ? "" : String(chunk),

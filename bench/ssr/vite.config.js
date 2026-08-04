@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-/** Self-contained IIFE for goqjs (embeds React). */
+/** Self-contained IIFE for hon (embeds React). */
 export default defineConfig({
   plugins: [react()],
   define: {
@@ -12,7 +12,7 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'es2020',
     lib: {
-      entry: 'src/entry-goqjs.jsx',
+      entry: 'src/entry-hon.jsx',
       name: 'BenchSSR',
       formats: ['iife'],
       fileName: () => 'ssr.js',

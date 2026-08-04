@@ -38,7 +38,7 @@ func installTestLog(r *Runtime, w *bytes.Buffer) error {
 	})
 	return r.Eval(`
 globalThis.console = { log: function() {
-  __goqjs_host("consoleLog", JSON.stringify(Array.prototype.slice.call(arguments)));
+  __hon_host("consoleLog", JSON.stringify(Array.prototype.slice.call(arguments)));
 }};
 `)
 }

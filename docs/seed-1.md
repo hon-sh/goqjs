@@ -1,4 +1,4 @@
-# goqjs — seed（前世今生）
+# hon — seed（前世今生）
 
 > 给后续 agent / 人类：本目录不是凭空玩具，而是一次「Go 宿主做 React SSR」讨论收敛后的最小实验床。  
 > 实现细节以代码与 `README.md` 为准；本文保留**动机、结论与边界**，避免重复踩坑。
@@ -98,15 +98,15 @@ Runtime → js_std_init_handlers → std/os 模块 → Eval → js_std_loop
 
 ## 4. 本仓库现状（已实现的最小证明）
 
-路径：`_misc/goqjs/`  
-模块名：`goqjs`（内部短名，非完整 module path）  
+路径：`_misc/hon/`  
+模块名：`hon`（内部短名，非完整 module path）  
 引擎：Bellard QuickJS **`2026-06-04`**（`https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz`），vendored 在 `third_party/quickjs/`。
 
 ### Demo 契约
 
 ```bash
-cd _misc/goqjs
-go run ./cmd/goqjs 3 5 6
+cd _misc/gohon
+go run ./cmd/gohon 3 5 6
 ```
 
 - **一个** QJS 实例
@@ -126,7 +126,7 @@ for (let i = 0; i < c; ++i) {
 
 ### 当前桥接方式
 
-- Go：`runtime.LockOSThread` + cgo `goqjs_run`
+- Go：`runtime.LockOSThread` + cgo `hon_run`
 - C：建 Runtime/Context，挂 host `respWrite`，eval 脚本，**`js_std_loop` 直到 idle**
 - 证明点：**单 Runtime + loop 上多路 async 任务 + 宿主 write 回调** —— 即「mini-node」骨架，尚非 SSR/fetch 产品
 
@@ -147,7 +147,7 @@ for (let i = 0; i < c; ++i) {
 1. 把「整包 `fetch` → Promise resolve」接到 Go `net/http`，完成事件只经 loop 线程 resolve  
 2. 再考虑 chunked stream / backpressure  
 3. SSR：esbuild 打 CJS/IIFE bundle，在同一 loop 上多请求多路复用  
-4. CPU 成为瓶颈后再 ×N 个 goqjs 实例  
+4. CPU 成为瓶颈后再 ×N 个 hon 实例  
 
 优先保持：**API 面尽量窄**（SSR 不需要整份 `qjs:os` 文件/进程能力）。
 
@@ -155,13 +155,13 @@ for (let i = 0; i < c; ++i) {
 
 ## 7. 给后续 agent 的操作提示
 
-- 先读 `README.md` + `runtime/` + `cmd/goqjs/`，再改；本 `seed.md` 不替代代码。  
+- 先读 `README.md` + `runtime/` + `cmd/gohon/`，再改；本 `seed.md` 不替代代码。  
 - 改 loop/线程模型前重读 §2.5：不要在非 loop 线程调 QuickJS API。  
-- 依赖 tarball 版本与 `third_party/quickjs/VERSION`；升级引擎需回归 `go run ./cmd/goqjs 3 5 6`。  
-- 模块名目前是故意的短名 `goqjs`；若要进主 module 树再改 path。  
+- 依赖 tarball 版本与 `third_party/quickjs/VERSION`；升级引擎需回归 `go run ./cmd/gohon 3 5 6`。  
+- 模块名目前是故意的短名 `hon`；若要进主 module 树再改 path。  
 
 ---
 
 ## 8. 一句话
 
-**goqjs = 用 QuickJS 的 `js_std_loop` 宿主证明「Go 进程内单 JS 运行时可多路异步任务」；它是 React-SSR-on-Go 讨论的实验内核，不是完整 Node，也尚不是 SSR 框架。**
+**hon = 用 QuickJS 的 `js_std_loop` 宿主证明「Go 进程内单 JS 运行时可多路异步任务」；它是 React-SSR-on-Go 讨论的实验内核，不是完整 Node，也尚不是 SSR 框架。**

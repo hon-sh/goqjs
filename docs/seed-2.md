@@ -1,4 +1,4 @@
-# goqjs — seed-2（宿主扩展与 stdlib）
+# hon — seed-2（宿主扩展与 stdlib）
 
 > 承接 `docs/seed-1.md` 的引擎结论；本文记录 **Runtime 变薄、Inject 闸门、stdlib、cmd 分工** 的产品决策。  
 > 实现以代码为准；本文避免再踩「能力焊死在 C boot / 全局 resp」的坑。
@@ -11,8 +11,8 @@
 runtime     引擎宿主：loop、invoke、Inject 闸门、平台 timer 暴露
 stdlib      可复用配方：console.log、fetch（可跳过 / 可替换）
 pool        N 个 Runtime 编排（round-robin）
-cmd/goqjs   CLI：Install stdlib + 可选 sleep 糖
-cmd/goqjs-serve  HTTP：Install stdlib + 每请求 req/res（req_id 定位）
+cmd/gohon   CLI：Install stdlib + 可选 sleep 糖
+cmd/gohon-serve  HTTP：Install stdlib + 每请求 req/res（req_id 定位）
 嵌入用户    New → Install 或自写 Inject → Run（或用 pool）
 ```
 
@@ -25,7 +25,7 @@ cmd/goqjs-serve  HTTP：Install stdlib + 每请求 req/res（req_id 定位）
 ## 2. Boot 在 Go，不在 C
 
 - `bridge.c` 只保留：建 rt/ctx、wake pipe、`js_std_loop`、少量固定 stub（done / wake_drain / host_call / async_start）。  
-- **核心 boot 字符串在 Go** 里 eval（低频，无性能问题）：`std`/`os`、`setTimeout`/`clearTimeout`、`__goqjs_invoke`。  
+- **核心 boot 字符串在 Go** 里 eval（低频，无性能问题）：`std`/`os`、`setTimeout`/`clearTimeout`、`__hon_invoke`。  
 - **不再**在内核 boot 里装 `resp` / `respWrite`。
 
 ---
@@ -49,7 +49,7 @@ stdlib.Install(r, stdlib.Options{Console: true, Fetch: true, ...})
 |------|------|--------|
 | `console.log` | 写到 `Options.Log`（默认 stdout） | 自定义 Writer / 不装 Console |
 | `fetch` | Go `net/http`（最小可用子集） | 自定义 Client / 不装 Fetch |
-| `sleep` | **不在** stdlib 默认里 | `cmd/goqjs` 可注入糖：`Promise + setTimeout` |
+| `sleep` | **不在** stdlib 默认里 | `cmd/gohon` 可注入糖：`Promise + setTimeout` |
 
 多个 cmd 与嵌入方 **复用 Install**；也可以完全自写 Inject，不调用 stdlib。
 
@@ -57,13 +57,13 @@ stdlib.Install(r, stdlib.Options{Console: true, Fetch: true, ...})
 
 ## 5. cmd 分工
 
-### `cmd/goqjs`
+### `cmd/gohon`
 
 - `stdlib.Install`（至少 Console）。  
 - 可选：`globalThis.sleep = ms => new Promise(r => setTimeout(r, ms))`。  
 - examples 用 `console.log`，不再用 `resp.write`。
 
-### `cmd/goqjs-serve`
+### `cmd/gohon-serve`
 
 - JS：`run(req, res)` 语义对象（examples：`serve-*.js`）。  
 - Go：用 **`req_id`（+ Runtime `go_id`）** 定位 `ResponseWriter`；包装层把 `(reqId, metaJSON)` 转成 `req`/`res`。  
@@ -73,15 +73,15 @@ stdlib.Install(r, stdlib.Options{Console: true, Fetch: true, ...})
 
 ## 6. Host 桥约定（实现层）
 
-- **同步**：`__goqjs_host(name, jsonPayload) → string`（如 console）。  
-- **异步**：`__goqjs_async_start(name, jsonPayload) → id`，完成后再经 loop 线程 settle Promise（如 fetch）。  
+- **同步**：`__hon_host(name, jsonPayload) → string`（如 console）。  
+- **异步**：`__hon_async_start(name, jsonPayload) → id`，完成后再经 loop 线程 settle Promise（如 fetch）。  
 - 多 Runtime：回调一律带 `go_id`。
 
 ---
 
 ## 7. Pool
 
-- 独立包 `goqjs/pool`：`pool.New(ctx, run, n, setup)` + `-c N`。  
+- 独立包 `hon/pool`：`pool.New(ctx, run, n, setup)` + `-c N`。  
 - `setup(*runtime.Runtime) error` 在任意 `Run` 前 Install。  
 - Pool 只依赖 runtime 公开 API，不碰内部字段。
 
@@ -91,8 +91,8 @@ stdlib.Install(r, stdlib.Options{Console: true, Fetch: true, ...})
 
 1. Boot → Go；去掉内核 `resp`；Inject 闸门 + host/async 桥  
 2. `stdlib`：console，再 fetch 最小子集  
-3. 改 `cmd/goqjs` + examples + 测试  
-4. ~~`cmd/goqjs-serve` 骨架（req_id + res.write）~~（已有）  
+3. 改 `cmd/gohon` + examples + 测试  
+4. ~~`cmd/gohon-serve` 骨架（req_id + res.write）~~（已有）  
 
 ---
 

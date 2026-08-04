@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sequential fib HTTP bench: bun → deno → goqjs (-c 1) → goqjs (-c N).
+# Sequential fib HTTP bench: bun → deno → hon (-c 1) → hon (-c N).
 # Writes results/fib-<stamp>.txt (full log) + results/fib-<stamp>.md (comparison tables).
 # Requires: oha, bun, deno (>=2), go, python3.
 set -euo pipefail
@@ -15,7 +15,7 @@ OUT_TXT="${OUT_DIR}/fib-${STAMP}.txt"
 OUT_MD="${OUT_DIR}/fib-${STAMP}.md"
 METRICS_DIR="${OUT_DIR}/fib-${STAMP}.metrics"
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
-GOQJS_C="${GOQJS_C:-$NPROC}"
+HON_C="${HON_C:-$NPROC}"
 DENO_PARALLEL="${DENO_PARALLEL:-0}"
 
 LATENCY_N="${LATENCY_N:-20}"
@@ -58,18 +58,18 @@ mkdir -p "$OUT_DIR" "$METRICS_DIR"
 exec > >(tee "$OUT_TXT")
 exec 2>&1
 
-echo "=== goqjs fib bench ${STAMP} ==="
-echo "host=${HOST} port=${PORT} goqjs_c=${GOQJS_C} nproc=${NPROC} deno_parallel=${DENO_PARALLEL}"
+echo "=== hon fib bench ${STAMP} ==="
+echo "host=${HOST} port=${PORT} hon_c=${HON_C} nproc=${NPROC} deno_parallel=${DENO_PARALLEL}"
 echo "oha=${OHA_VER}"
 echo "bun=${BUN_VER}"
 echo "deno=${DENO_LINE}"
 echo "deno.version=${DENO_VER_NUM}"
 echo
 
-BIN="${ROOT}/bench/.bin/goqjs-serve"
+BIN="${ROOT}/bench/.bin/gohon-serve"
 mkdir -p "${ROOT}/bench/.bin"
-echo "building goqjs-serve → ${BIN}"
-(cd "$ROOT" && go build -o "$BIN" ./cmd/goqjs-serve)
+echo "building gohon-serve → ${BIN}"
+(cd "$ROOT" && go build -o "$BIN" ./cmd/gohon-serve)
 echo
 
 SERVER_PID=""
@@ -184,8 +184,8 @@ if [[ "${DENO_PARALLEL}" == "1" ]]; then
 fi
 bench_target "deno" deno "${DENO_ARGS[@]}" "${FIB}/server_deno.js"
 
-bench_target "goqjs-c1" "$BIN" -c 1 -addr "${HOST}:${PORT}" -f "${FIB}/serve-fib.js"
-bench_target "goqjs-c${GOQJS_C}" "$BIN" -c "$GOQJS_C" -addr "${HOST}:${PORT}" -f "${FIB}/serve-fib.js"
+bench_target "hon-c1" "$BIN" -c 1 -addr "${HOST}:${PORT}" -f "${FIB}/serve-fib.js"
+bench_target "hon-c${HON_C}" "$BIN" -c "$HON_C" -addr "${HOST}:${PORT}" -f "${FIB}/serve-fib.js"
 
 python3 "${ROOT}/bench/report.py" \
   --metrics-dir "$METRICS_DIR" \
@@ -193,7 +193,7 @@ python3 "${ROOT}/bench/report.py" \
   --title "Fib HTTP bench ${STAMP}" \
   --meta "host=${HOST}" \
   --meta "port=${PORT}" \
-  --meta "goqjs_c=${GOQJS_C}" \
+  --meta "hon_c=${HON_C}" \
   --meta "nproc=${NPROC}" \
   --meta "deno_parallel=${DENO_PARALLEL}" \
   --meta "oha=${OHA_VER}" \

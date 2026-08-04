@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"goqjs/runtime"
+	"github.com/hon-go/hon/runtime"
 )
 
 // Pool is N independent Runtimes (each with its own JS heap and loop thread).

@@ -9,22 +9,22 @@ import (
 	"strings"
 	"sync"
 
-	"goqjs/pool"
-	"goqjs/runtime"
-	"goqjs/stdlib"
+	"github.com/hon-go/hon/pool"
+	"github.com/hon-go/hon/runtime"
+	"github.com/hon-go/hon/stdlib"
 )
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: goqjs [-c N] (-e code | -f file) [arg...]\n")
+		fmt.Fprintf(os.Stderr, "usage: gohon [-c N] (-e code | -f file) [arg...]\n")
 		fmt.Fprintf(os.Stderr, "  -c N      runtime pool size (default 1)\n")
 		fmt.Fprintf(os.Stderr, "  -e code   JS function expression for run\n")
 		fmt.Fprintf(os.Stderr, "  -f file   read run function expression from file\n")
 		fmt.Fprintf(os.Stderr, "  each arg starts one concurrent pool.Run(arg)\n")
 		fmt.Fprintf(os.Stderr, "\nexamples:\n")
-		fmt.Fprintf(os.Stderr, "  goqjs -f examples/sleep.js 3 5 6\n")
-		fmt.Fprintf(os.Stderr, "  goqjs -c 2 -f examples/fib.js 32 33 34 35\n")
-		fmt.Fprintf(os.Stderr, "  goqjs -f examples/fact.js 20000 20000\n")
+		fmt.Fprintf(os.Stderr, "  gohon -f examples/sleep.js 3 5 6\n")
+		fmt.Fprintf(os.Stderr, "  gohon -c 2 -f examples/fib.js 32 33 34 35\n")
+		fmt.Fprintf(os.Stderr, "  gohon -f examples/fact.js 20000 20000\n")
 	}
 
 	workers := flag.Int("c", 1, "runtime pool size")
@@ -33,7 +33,7 @@ func main() {
 	flag.Parse()
 
 	if *workers < 1 {
-		fmt.Fprintf(os.Stderr, "goqjs: -c must be >= 1\n")
+		fmt.Fprintf(os.Stderr, "gohon: -c must be >= 1\n")
 		os.Exit(2)
 	}
 
@@ -41,9 +41,9 @@ func main() {
 	hasF := *file != ""
 	if hasE == hasF {
 		if !hasE && !hasF {
-			fmt.Fprintf(os.Stderr, "goqjs: require -e or -f\n")
+			fmt.Fprintf(os.Stderr, "gohon: require -e or -f\n")
 		} else {
-			fmt.Fprintf(os.Stderr, "goqjs: -e and -f are mutually exclusive\n")
+			fmt.Fprintf(os.Stderr, "gohon: -e and -f are mutually exclusive\n")
 		}
 		flag.Usage()
 		os.Exit(2)
@@ -55,20 +55,20 @@ func main() {
 	} else {
 		b, err := os.ReadFile(*file)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "goqjs: read %s: %v\n", *file, err)
+			fmt.Fprintf(os.Stderr, "gohon: read %s: %v\n", *file, err)
 			os.Exit(1)
 		}
 		run = string(b)
 	}
 	run = strings.TrimSpace(run)
 	if run == "" {
-		fmt.Fprintf(os.Stderr, "goqjs: empty run\n")
+		fmt.Fprintf(os.Stderr, "gohon: empty run\n")
 		os.Exit(2)
 	}
 
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "goqjs: require at least one arg for run\n")
+		fmt.Fprintf(os.Stderr, "gohon: require at least one arg for run\n")
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -96,7 +96,7 @@ func main() {
 	p, err := pool.New(ctx, run, *workers, setup)
 	if err != nil {
 		cancel()
-		fmt.Fprintf(os.Stderr, "goqjs: %v\n", err)
+		fmt.Fprintf(os.Stderr, "gohon: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -104,7 +104,7 @@ func main() {
 	for _, arg := range runArgs {
 		wg.Go(func() {
 			if err := p.Run(arg); err != nil {
-				fmt.Fprintf(os.Stderr, "goqjs: run(%v): %v\n", arg, err)
+				fmt.Fprintf(os.Stderr, "gohon: run(%v): %v\n", arg, err)
 			}
 		})
 	}

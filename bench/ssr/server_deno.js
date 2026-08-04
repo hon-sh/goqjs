@@ -1,4 +1,4 @@
-/** Load the same Vite IIFE goqjs uses — identical React work across runtimes. */
+/** Load the same Vite IIFE hon uses — identical React work across runtimes. */
 const code = await Deno.readTextFile(new URL("./dist/server/ssr.js", import.meta.url));
 (0, eval)(code);
 

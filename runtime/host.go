@@ -39,7 +39,7 @@ func (r *Runtime) freezeLocked() {
 
 func (r *Runtime) mustNotFrozenLocked() {
 	if r.frozen {
-		panic("goqjs: host injection after first Run")
+		panic("hon: host injection after first Run")
 	}
 }
 
@@ -49,7 +49,7 @@ func (r *Runtime) Eval(script string) error {
 	r.mu.Lock()
 	if r.frozen {
 		r.mu.Unlock()
-		panic("goqjs: host injection after first Run")
+		panic("hon: host injection after first Run")
 	}
 	r.mu.Unlock()
 
@@ -66,10 +66,10 @@ func (r *Runtime) Eval(script string) error {
 }
 
 // InjectHost registers a synchronous host function visible via
-// __goqjs_host(name, payload). Panics after first Run.
+// __hon_host(name, payload). Panics after first Run.
 func (r *Runtime) InjectHost(name string, fn HostFunc) {
 	if name == "" || fn == nil {
-		panic("goqjs: InjectHost requires name and fn")
+		panic("hon: InjectHost requires name and fn")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -80,11 +80,11 @@ func (r *Runtime) InjectHost(name string, fn HostFunc) {
 	r.hostSync[name] = fn
 }
 
-// InjectAsyncHost registers an async host used via __goqjs_async(name, obj).
+// InjectAsyncHost registers an async host used via __hon_async(name, obj).
 // Panics after first Run.
 func (r *Runtime) InjectAsyncHost(name string, fn AsyncHostFunc) {
 	if name == "" || fn == nil {
-		panic("goqjs: InjectAsyncHost requires name and fn")
+		panic("hon: InjectAsyncHost requires name and fn")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -107,7 +107,7 @@ func (r *Runtime) drainCtrl() {
 			}
 			cs := C.CString(msg.script)
 			cname := C.CString(filename)
-			ret := C.goqjs_eval(r.handle, cs, cname, C.int(mod))
+			ret := C.hon_eval(r.handle, cs, cname, C.int(mod))
 			C.free(unsafe.Pointer(cs))
 			C.free(unsafe.Pointer(cname))
 			var err error
@@ -136,7 +136,7 @@ func (r *Runtime) drainAsyncSettles() {
 				payload = string(b)
 			}
 			cp := C.CString(payload)
-			ret := C.goqjs_async_settle(r.handle, C.int(s.id), boolToCInt(s.ok), cp)
+			ret := C.hon_async_settle(r.handle, C.int(s.id), boolToCInt(s.ok), cp)
 			C.free(unsafe.Pointer(cp))
 			if ret != 0 {
 				// Best-effort: reject waiter if settle eval failed.
@@ -155,8 +155,8 @@ func boolToCInt(ok bool) C.int {
 	return 0
 }
 
-//export goqjs_host_call
-func goqjs_host_call(goID C.int, name *C.char, payload *C.char, errOut **C.char) *C.char {
+//export hon_host_call
+func hon_host_call(goID C.int, name *C.char, payload *C.char, errOut **C.char) *C.char {
 	r := lookupRuntime(int32(goID))
 	if r == nil {
 		*errOut = C.CString("runtime not found")
@@ -179,8 +179,8 @@ func goqjs_host_call(goID C.int, name *C.char, payload *C.char, errOut **C.char)
 	return C.CString(out)
 }
 
-//export goqjs_host_async_start
-func goqjs_host_async_start(goID C.int, name *C.char, payload *C.char, errOut **C.char) C.int {
+//export hon_host_async_start
+func hon_host_async_start(goID C.int, name *C.char, payload *C.char, errOut **C.char) C.int {
 	r := lookupRuntime(int32(goID))
 	if r == nil {
 		*errOut = C.CString("runtime not found")

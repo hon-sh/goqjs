@@ -13,20 +13,20 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"goqjs/pool"
-	"goqjs/runtime"
-	"goqjs/stdlib"
+	"github.com/hon-go/hon/pool"
+	"github.com/hon-go/hon/runtime"
+	"github.com/hon-go/hon/stdlib"
 )
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: goqjs-serve [-c N] [-addr host:port] (-e code | -f file)\n")
+		fmt.Fprintf(os.Stderr, "usage: gohon-serve [-c N] [-addr host:port] (-e code | -f file)\n")
 		fmt.Fprintf(os.Stderr, "  -c N       runtime pool size (default 1)\n")
 		fmt.Fprintf(os.Stderr, "  -addr      listen address (default :8080)\n")
 		fmt.Fprintf(os.Stderr, "  -e/-f      JS run as async function(req, res) { ... }\n")
 		fmt.Fprintf(os.Stderr, "\nexamples:\n")
-		fmt.Fprintf(os.Stderr, "  goqjs-serve -f examples/serve-hello.js\n")
-		fmt.Fprintf(os.Stderr, "  goqjs-serve -c 2 -f examples/serve-sleep.js -addr :8080\n")
+		fmt.Fprintf(os.Stderr, "  gohon-serve -f examples/serve-hello.js\n")
+		fmt.Fprintf(os.Stderr, "  gohon-serve -c 2 -f examples/serve-sleep.js -addr :8080\n")
 	}
 
 	workers := flag.Int("c", 1, "runtime pool size")
@@ -36,7 +36,7 @@ func main() {
 	flag.Parse()
 
 	if *workers < 1 {
-		fmt.Fprintf(os.Stderr, "goqjs-serve: -c must be >= 1\n")
+		fmt.Fprintf(os.Stderr, "gohon-serve: -c must be >= 1\n")
 		os.Exit(2)
 	}
 
@@ -44,9 +44,9 @@ func main() {
 	hasF := *file != ""
 	if hasE == hasF {
 		if !hasE && !hasF {
-			fmt.Fprintf(os.Stderr, "goqjs-serve: require -e or -f\n")
+			fmt.Fprintf(os.Stderr, "gohon-serve: require -e or -f\n")
 		} else {
-			fmt.Fprintf(os.Stderr, "goqjs-serve: -e and -f are mutually exclusive\n")
+			fmt.Fprintf(os.Stderr, "gohon-serve: -e and -f are mutually exclusive\n")
 		}
 		flag.Usage()
 		os.Exit(2)
@@ -58,14 +58,14 @@ func main() {
 	} else {
 		b, err := os.ReadFile(*file)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "goqjs-serve: read %s: %v\n", *file, err)
+			fmt.Fprintf(os.Stderr, "gohon-serve: read %s: %v\n", *file, err)
 			os.Exit(1)
 		}
 		userRun = string(b)
 	}
 	userRun = strings.TrimSpace(userRun)
 	if userRun == "" {
-		fmt.Fprintf(os.Stderr, "goqjs-serve: empty run\n")
+		fmt.Fprintf(os.Stderr, "gohon-serve: empty run\n")
 		os.Exit(2)
 	}
 
@@ -89,7 +89,7 @@ func main() {
 
 	p, err := pool.New(ctx, run, *workers, setup)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "goqjs-serve: %v\n", err)
+		fmt.Fprintf(os.Stderr, "gohon-serve: %v\n", err)
 		os.Exit(1)
 	}
 	defer func() {
@@ -117,7 +117,7 @@ func main() {
 			if !sessions.wrote(id) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
-			fmt.Fprintf(os.Stderr, "goqjs-serve: run: %v\n", err)
+			fmt.Fprintf(os.Stderr, "gohon-serve: run: %v\n", err)
 		}
 	})
 
@@ -127,9 +127,9 @@ func main() {
 		_ = srv.Shutdown(context.Background())
 	}()
 
-	fmt.Fprintf(os.Stderr, "goqjs-serve: listening on %s (pool=%d)\n", *addr, *workers)
+	fmt.Fprintf(os.Stderr, "gohon-serve: listening on %s (pool=%d)\n", *addr, *workers)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Fprintf(os.Stderr, "goqjs-serve: %v\n", err)
+		fmt.Fprintf(os.Stderr, "gohon-serve: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -166,7 +166,7 @@ func wrapHTTPRun(userRun string) string {
   var res = {
     statusCode: 200,
     write: async function(chunk) {
-      __goqjs_host("httpWrite", JSON.stringify({
+      __hon_host("httpWrite", JSON.stringify({
         id: reqId,
         status: this.statusCode|0,
         body: chunk === undefined || chunk === null ? "" : String(chunk),
@@ -174,7 +174,7 @@ func wrapHTTPRun(userRun string) string {
       }));
     },
     end: async function(chunk) {
-      __goqjs_host("httpWrite", JSON.stringify({
+      __hon_host("httpWrite", JSON.stringify({
         id: reqId,
         status: this.statusCode|0,
         body: chunk === undefined || chunk === null ? "" : String(chunk),

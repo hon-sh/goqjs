@@ -1,4 +1,4 @@
-.PHONY: test prod prod-goqjs prod-goqjs-serve
+.PHONY: test prod prod-gohon prod-gohon-serve
 
 GO_LDFLAGS := -s -w
 GO_BUILD := go build -trimpath -ldflags "$(GO_LDFLAGS)"
@@ -6,10 +6,10 @@ GO_BUILD := go build -trimpath -ldflags "$(GO_LDFLAGS)"
 test:
 	go test ./runtime/... ./pool/... ./stdlib/... -count=1
 
-prod: prod-goqjs prod-goqjs-serve
+prod: prod-gohon prod-gohon-serve
 
-prod-goqjs:
-	$(GO_BUILD) -o goqjs ./cmd/goqjs
+prod-gohon:
+	$(GO_BUILD) -o gohon ./cmd/gohon
 
-prod-goqjs-serve:
-	$(GO_BUILD) -o goqjs-serve ./cmd/goqjs-serve
+prod-gohon-serve:
+	$(GO_BUILD) -o gohon-serve ./cmd/gohon-serve

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"goqjs/runtime"
-	"goqjs/stdlib"
+	"github.com/hon-go/hon/runtime"
+	"github.com/hon-go/hon/stdlib"
 )
 
 func TestFetchGET(t *testing.T) {

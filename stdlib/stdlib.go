@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"goqjs/runtime"
+	"github.com/hon-go/hon/runtime"
 )
 
 // Options selects which standard host APIs to install.
@@ -68,7 +68,7 @@ func installConsole(r *runtime.Runtime, w io.Writer) error {
 globalThis.console = globalThis.console || {};
 globalThis.console.log = function() {
   var args = Array.prototype.slice.call(arguments);
-  __goqjs_host("consoleLog", JSON.stringify(args));
+  __hon_host("consoleLog", JSON.stringify(args));
 };
 `)
 }
@@ -130,7 +130,7 @@ globalThis.fetch = function(input, init) {
   var method = "GET";
   if (input && typeof input === "object" && input.url) url = input.url;
   if (init && init.method) method = String(init.method);
-  return __goqjs_async("fetch", { url: String(url), method: method }).then(function(res) {
+  return __hon_async("fetch", { url: String(url), method: method }).then(function(res) {
     return {
       ok: !!res.ok,
       status: res.status|0,

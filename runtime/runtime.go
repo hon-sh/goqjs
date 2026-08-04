@@ -35,8 +35,8 @@ func lookupRuntime(id int32) *Runtime {
 	return v.(*Runtime)
 }
 
-//export goqjs_host_done
-func goqjs_host_done(goID C.int, id C.int, ok C.int, errMsg *C.char) {
+//export hon_host_done
+func hon_host_done(goID C.int, id C.int, ok C.int, errMsg *C.char) {
 	r := lookupRuntime(int32(goID))
 	if r == nil {
 		return
@@ -44,8 +44,8 @@ func goqjs_host_done(goID C.int, id C.int, ok C.int, errMsg *C.char) {
 	r.finish(int(id), ok != 0, C.GoString(errMsg))
 }
 
-//export goqjs_host_wake_process
-func goqjs_host_wake_process(goID C.int) {
+//export hon_host_wake_process
+func hon_host_wake_process(goID C.int) {
 	r := lookupRuntime(int32(goID))
 	if r == nil {
 		return
@@ -65,7 +65,7 @@ type Runtime struct {
 	id       int32
 	ctx      context.Context
 	handleMu sync.RWMutex
-	handle   *C.goqjs_rt
+	handle   *C.hon_rt
 
 	mu     sync.Mutex
 	frozen bool
@@ -86,7 +86,7 @@ type Runtime struct {
 
 // New creates a QuickJS runtime, evaluates the core boot (std/os, timers,
 // invoke), binds run, and starts js_std_loop. Host APIs (console/fetch) are not
-// installed — use goqjs/stdlib.Install or Inject* before the first Run.
+// installed — use hon/stdlib.Install or Inject* before the first Run.
 //
 // run is a JS function expression, e.g. `async function(c) { ... }`.
 func New(ctx context.Context, run string) (*Runtime, error) {
@@ -131,9 +131,9 @@ func (r *Runtime) loop(run string) {
 	defer close(r.loopDone)
 	defer registry.Delete(r.id)
 
-	h := C.goqjs_create(C.int32_t(r.id))
+	h := C.hon_create(C.int32_t(r.id))
 	if h == nil {
-		r.startErr = fmt.Errorf("goqjs_create failed")
+		r.startErr = fmt.Errorf("hon_create failed")
 		close(r.started)
 		return
 	}
@@ -144,7 +144,7 @@ func (r *Runtime) loop(run string) {
 		r.handleMu.Lock()
 		r.handle = nil
 		r.handleMu.Unlock()
-		C.goqjs_destroy(h)
+		C.hon_destroy(h)
 	}()
 
 	if err := r.evalOnLoop(h, coreBoot, "<boot>", 1); err != nil {
@@ -158,14 +158,14 @@ func (r *Runtime) loop(run string) {
 		return
 	}
 
-	bind := "globalThis.__goqjs_run = (" + run + ");"
+	bind := "globalThis.__hon_run = (" + run + ");"
 	if err := r.evalOnLoop(h, bind, "<run>", 0); err != nil {
 		r.startErr = fmt.Errorf("eval run: %w", err)
 		close(r.started)
 		return
 	}
 
-	if C.goqjs_install_wake(h) != 0 {
+	if C.hon_install_wake(h) != 0 {
 		r.startErr = fmt.Errorf("install wake handler failed")
 		close(r.started)
 		return
@@ -177,10 +177,10 @@ func (r *Runtime) loop(run string) {
 	go func() {
 		defer close(stopDone)
 		<-r.ctx.Done()
-		C.goqjs_request_stop(h)
+		C.hon_request_stop(h)
 	}()
 
-	C.goqjs_loop(h)
+	C.hon_loop(h)
 	<-stopDone
 
 	r.pending.Range(func(key, value any) bool {
@@ -194,10 +194,10 @@ func (r *Runtime) loop(run string) {
 	})
 }
 
-func (r *Runtime) evalOnLoop(h *C.goqjs_rt, script, filename string, module int) error {
+func (r *Runtime) evalOnLoop(h *C.hon_rt, script, filename string, module int) error {
 	cs := C.CString(script)
 	cname := C.CString(filename)
-	ret := C.goqjs_eval(h, cs, cname, C.int(module))
+	ret := C.hon_eval(h, cs, cname, C.int(module))
 	C.free(unsafe.Pointer(cs))
 	C.free(unsafe.Pointer(cname))
 	if ret != 0 {
@@ -211,7 +211,7 @@ func (r *Runtime) wake() {
 	h := r.handle
 	r.handleMu.RUnlock()
 	if h != nil {
-		C.goqjs_wake(h)
+		C.hon_wake(h)
 	}
 }
 
@@ -220,7 +220,7 @@ func (r *Runtime) drainRequests() {
 		select {
 		case req := <-r.reqCh:
 			cs := C.CString(req.args)
-			ret := C.goqjs_invoke(r.handle, C.int(req.id), cs)
+			ret := C.hon_invoke(r.handle, C.int(req.id), cs)
 			C.free(unsafe.Pointer(cs))
 			if ret != 0 {
 				r.finish(req.id, false, "invoke run failed")

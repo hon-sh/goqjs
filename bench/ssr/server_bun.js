@@ -1,4 +1,4 @@
-/** Load the same Vite IIFE goqjs uses — identical React work across runtimes. */
+/** Load the same Vite IIFE hon uses — identical React work across runtimes. */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
