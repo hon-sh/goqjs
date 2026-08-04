@@ -1,4 +1,4 @@
-.PHONY: test prod prod-goqjs prod-goqjs-serve hn-ssr
+.PHONY: test prod prod-goqjs prod-goqjs-serve
 
 GO_LDFLAGS := -s -w
 GO_BUILD := go build -trimpath -ldflags "$(GO_LDFLAGS)"
@@ -13,6 +13,3 @@ prod-goqjs:
 
 prod-goqjs-serve:
 	$(GO_BUILD) -o goqjs-serve ./cmd/goqjs-serve
-
-hn-ssr:
-	$(MAKE) -C examples/hn-ssr prod

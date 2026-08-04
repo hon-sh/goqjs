@@ -54,15 +54,4 @@ JS entry is `async function(req, res) { ... }`. Go locates the response via `req
 
 ### HN SSR (Vite + React)
 
-Minimal Hacker News SSR (Firebase API) with a Go + goqjs host that embeds `dist/`:
-
-```bash
-cd examples/hn-ssr && npm install
-make hn-ssr                          # from repo root
-./examples/hn-ssr/hn-ssr -addr :8080
-# or: cd examples/hn-ssr && make prod && ./hn-ssr -addr :8080
-```
-
-Dev with Vite/Node: `cd examples/hn-ssr && npm run dev`.
-
-See [`examples/hn-ssr/README.md`](examples/hn-ssr/README.md).
+Minimal Hacker News SSR demo lives in a separate repo: [hon-go/hn-ssr](https://github.com/hon-go/hn-ssr).
